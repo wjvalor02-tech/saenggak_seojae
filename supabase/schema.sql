@@ -16,8 +16,12 @@ create index if not exists notes_user_synced on public.notes (user_id, synced_at
 create table if not exists public.meta (
   user_id    uuid primary key default auth.uid() references auth.users(id) on delete cascade,
   sub_born   jsonb not null default '{}'::jsonb,
+  cats       jsonb,                -- 사용자가 정한 분야 목록(비어 있으면 앱 기본 6개)
+  cats_updated_at timestamptz,
   synced_at  timestamptz not null default now()
 );
+alter table public.meta add column if not exists cats jsonb;
+alter table public.meta add column if not exists cats_updated_at timestamptz;
 
 -- AI 호출 수(하루 상한·사용량 기록)
 create table if not exists public.ai_usage (
@@ -60,6 +64,13 @@ begin
       end if;
     end loop;
     new.sub_born := merged;
+
+    -- 분야 목록은 더 최근에 고친 쪽이 이긴다
+    if new.cats is null
+       or (old.cats_updated_at is not null and (new.cats_updated_at is null or new.cats_updated_at < old.cats_updated_at)) then
+      new.cats := old.cats;
+      new.cats_updated_at := old.cats_updated_at;
+    end if;
   end if;
   new.synced_at := clock_timestamp();
   return new;

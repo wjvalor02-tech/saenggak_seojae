@@ -15,8 +15,9 @@ export const rel = s => {
 };
 export const todayLabel = () => fmt(todayS()).replace(/ \((.)\)/, ' $1요일');
 
-// 분야는 고정(A안), 갈래만 자란다
-export const CATS = [
+// 분야: 처음엔 기본 6개로 시작하고, 사용자가 서재 → 분야 관리에서 추가·삭제할 수 있다.
+// 갈래는 여전히 AI가 글에 맞춰 키운다.
+export const DEFAULT_CATS = [
   { key: 'research', hue: 160, name: '연구', emoji: '📚' },
   { key: 'class', hue: 60, name: '수업', emoji: '✏️' },
   { key: 'reading', hue: 25, name: '독서', emoji: '📖' },
@@ -24,7 +25,29 @@ export const CATS = [
   { key: 'daily', hue: 290, name: '일상', emoji: '☕' },
   { key: 'exercise', hue: 225, name: '운동', emoji: '🏃' },
 ];
-export const catOf = key => CATS.find(c => c.key === key) || CATS[4];
+export const MAX_CATS = 12;
+const HUES = [160, 60, 25, 125, 290, 225, 340, 95, 195, 260, 10, 45, 140, 310, 180, 75];
+
+// 사용자가 입력한 이름·이모지는 화면에 그대로 끼워 넣으므로 HTML 문자를 미리 걸러 둔다
+const clean = (s, max) => String(s ?? '').replace(/[<>&"'`]/g, '').replace(/\s+/g, ' ').trim().slice(0, max);
+export const cleanCat = c => ({
+  key: clean(c.key, 40).replace(/[^\w-]/g, '') || 'c_' + Math.random().toString(36).slice(2, 8),
+  name: clean(c.name, 10) || '분야',
+  emoji: clean(c.emoji, 8) || '📁',
+  hue: Number.isFinite(+c.hue) ? Math.round(+c.hue) % 360 : 160,
+});
+
+let CUR = DEFAULT_CATS;
+export const getCats = () => CUR;
+export function setCats(list) {
+  const seen = new Set();
+  const out = (Array.isArray(list) ? list : []).map(cleanCat).filter(c => !seen.has(c.key) && seen.add(c.key));
+  CUR = out.length ? out : DEFAULT_CATS;
+  return CUR;
+}
+export const nextHue = () => HUES.find(h => !CUR.some(c => c.hue === h)) ?? Math.floor(Math.random() * 360);
+// 삭제된 분야를 가리키는 글이 남아 있어도 화면이 깨지지 않게 대체값을 준다
+export const catOf = key => CUR.find(c => c.key === key) || { key, name: '분류 안 됨', emoji: '📁', hue: 60 };
 export const catColor = hue => `oklch(0.42 0.06 ${hue})`;
 
 export const uid = () => 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);

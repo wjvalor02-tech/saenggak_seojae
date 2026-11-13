@@ -78,6 +78,12 @@ export const ai = {
     }
     const h = heuristic(text);
     if (book && h.cat !== 'research' && h.cat !== 'class') { h.cat = 'reading'; h.sub = /역사/.test(text) ? '역사' : '교육'; }
+    // 사용자가 지운 기본 분야로 분류됐으면, 이름이 같은 분야나 '일상', 그것도 없으면 첫 분야로
+    if (!cats.find(c => c.key === h.cat)) {
+      const want = { research: '연구', class: '수업', reading: '독서', parent: '육아', daily: '일상', exercise: '운동' }[h.cat];
+      const alt = cats.find(c => c.name === want) || cats.find(c => c.key === 'daily') || cats[0];
+      h.cat = alt.key; h.sub = h.sub || '생각';
+    }
     return { ...h, aiPending: true };
   },
 

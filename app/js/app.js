@@ -1,5 +1,5 @@
 import { morph, esc } from './morph.js';
-import { CATS, catOf, catColor, todayS, pd, daysAgo, fmt, fmtPlain, shortDate, rel, todayLabel, uid, bookMeta, DOW } from './util.js';
+import { getCats, setCats, nextHue, MAX_CATS, DEFAULT_CATS, catOf, catColor, todayS, pd, daysAgo, fmt, fmtPlain, shortDate, rel, todayLabel, uid, bookMeta, DOW } from './util.js';
 import { db, deriveCats, normalizeImport, clean, requestPersist } from './store.js';
 import { sync } from './sync.js';
 import { ai, nlScore, isShort, oneLine } from './ai.js';
@@ -18,6 +18,8 @@ const S = {
   listening: false, voiceErr: null, book: null, bookStatus: 'idle', bookDismissed: false,
   email: '', code: '', loginStage: 'idle', loginErr: null, loginBusy: false,
   lastExport: null, aiUsage: {}, toast: null, landingDone: false,
+  // 분야 관리
+  catsAt: null, catsDirty: false, catMgr: false, newCatName: '', newCatEmoji: '', catErr: null, delCat: null, delTarget: null,
 };
 const root = document.getElementById('app');
 let timer = null, bookTimer = null, bookToken = null, checkToken = null, lastKey = null, lastLen = 0, rec = null, toastTimer = null, syncTimer = null;
@@ -52,6 +54,47 @@ function addBorn(cat, sub, date = todayS()) {
   set({ subBorn }); db.set('subBorn', subBorn);
 }
 
+// ───────────────────────── 분야 관리 ─────────────────────────
+async function saveCats(list, { dirty = true, at = new Date().toISOString() } = {}) {
+  setCats(list);
+  const rec = { list: getCats(), updatedAt: at, dirty };
+  set({ catsAt: at, catsDirty: dirty });
+  try { await db.set('cats', rec); } catch (e) { /* 무시 */ }
+  if (dirty) scheduleSync();
+}
+function addCat() {
+  const name = S.newCatName.replace(/[<>&"'`]/g, '').trim();
+  const emoji = S.newCatEmoji.replace(/[<>&"'`\s]/g, '').trim() || '📁';
+  if (!name) { set({ catErr: '분야 이름을 적어 주세요.' }); return; }
+  if (getCats().length >= MAX_CATS) { set({ catErr: `분야는 ${MAX_CATS}개까지 만들 수 있어요.` }); return; }
+  if (getCats().some(c => c.name === name)) { set({ catErr: '같은 이름의 분야가 이미 있어요.' }); return; }
+  saveCats([...getCats(), { key: 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name, emoji, hue: nextHue() }]);
+  set({ newCatName: '', newCatEmoji: '', catErr: null });
+  toast(`‘${name}’ 분야를 만들었어요.`);
+}
+function askDeleteCat(key) {
+  if (getCats().length <= 1) { set({ catErr: '분야는 하나 이상 있어야 해요.' }); return; }
+  const others = getCats().filter(c => c.key !== key);
+  set({ delCat: key, delTarget: (others.find(c => c.key === 'daily') || others[0]).key, catErr: null });
+}
+async function deleteCat() {
+  const key = S.delCat; if (!key) return;
+  const c = getCats().find(x => x.key === key); if (!c) { set({ delCat: null }); return; }
+  const moving = live().filter(n => n.cat === key);
+  const target = moving.length ? getCats().find(x => x.key === S.delTarget && x.key !== key) : null;
+  if (moving.length && !target) return;
+  if (!confirm(moving.length ? `‘${c.name}’ 분야를 지우고 글 ${moving.length}편을 ‘${target.name}’ 분야로 옮길까요?` : `‘${c.name}’ 분야를 지울까요?`)) return;
+  // 글을 먼저 옮기고(갈래 이름은 그대로) 분야를 지운다
+  for (const n of moving) { addBorn(target.key, n.sub); await writeNote({ ...n, cat: target.key, userSorted: true }); }
+  await saveCats(getCats().filter(x => x.key !== key));
+  set({ delCat: null, delTarget: null, shelfKey: S.shelfKey === key ? null : S.shelfKey });
+  toast(moving.length ? `글 ${moving.length}편을 ‘${target.name}’(으)로 옮기고 분야를 지웠어요.` : `‘${c.name}’ 분야를 지웠어요.`);
+}
+function resetCats() {
+  if (!confirm('분야 목록을 처음 6개로 되돌릴까요? 직접 만든 분야는 목록에서 빠지고, 그 분야의 글은 ‘분류 안 됨’으로 남아요.')) return;
+  saveCats(DEFAULT_CATS);
+}
+
 function scheduleSync(delay = 1200) {
   if (!sync.configured() || !sync.session()) return;
   clearTimeout(syncTimer);
@@ -76,6 +119,13 @@ const syncApi = {
       return n;
     });
     if (changed.length) { await db.putNotes(changed); S.notes = notes; }
+  },
+  // 분야 목록: 바뀐 쪽이 이긴다(가장 최근에 고친 기기의 목록)
+  getCatsDirty: () => (S.catsDirty ? { list: getCats(), updatedAt: S.catsAt } : null),
+  async markCatsClean(at) { if (S.catsAt === at && S.catsDirty) await saveCats(getCats(), { dirty: false, at }); },
+  async mergeCats(remote) {
+    if (!remote || !Array.isArray(remote.list) || !remote.list.length || !remote.updatedAt) return;
+    if (!S.catsAt || remote.updatedAt > S.catsAt) await saveCats(remote.list, { dirty: false, at: remote.updatedAt });
   },
   getSubBorn: () => S.subBorn,
   async mergeSubBorn(remote) {
@@ -192,7 +242,7 @@ async function save() {
 
   const before = cats();
   const r = await ai.classify(text, before, book);
-  const c = before.find(x => x.key === r.cat) || before[4];
+  const c = before.find(x => x.key === r.cat) || before.find(x => x.key === 'daily') || before[0];
   const isNew = !c.subs.find(s => s.name === r.sub);
   addBorn(c.key, r.sub);
   const cur = S.notes.find(n => n.id === id) || draftNote;
@@ -291,8 +341,12 @@ function importData(file) {
   const r = new FileReader();
   r.onload = async () => {
     try {
-      const { notes, subBorn } = normalizeImport(JSON.parse(r.result));
+      const { notes, subBorn, fileCats } = normalizeImport(JSON.parse(r.result));
       if (!confirm(`글 ${notes.length}편을 불러올까요? 지금 기록은 그대로 두고 합쳐요. (같은 글은 파일 내용으로 바뀌어요)`)) return;
+      // 백업에만 있는 분야(직접 만든 분야 등)는 목록에 더한다
+      const used = new Set(notes.map(n => n.cat));
+      const extra = fileCats.filter(c => used.has(c.key) && !getCats().some(x => x.key === c.key));
+      if (extra.length) await saveCats([...getCats(), ...extra]);
       const map = new Map(S.notes.map(n => [n.id, n]));
       notes.forEach(n => map.set(n.id, n));
       await db.putNotes(notes);
@@ -358,8 +412,13 @@ const A = {
   signOut: async () => { if (confirm('로그아웃할까요? 이 기기의 기록은 그대로 남아요.')) { await sync.signOut(); toast('로그아웃했어요.'); } },
   loginReset: () => set({ loginStage: 'idle', code: '', loginErr: null }),
   skipLanding: () => { finishLanding(); focusDraft(); },
+  toggleCatMgr: () => set({ catMgr: !S.catMgr, delCat: null, catErr: null }),
+  addCat, askDeleteCat: a => askDeleteCat(a), deleteCat, resetCats,
+  cancelDeleteCat: () => set({ delCat: null, delTarget: null }),
+  delTarget: a => set({ delTarget: a }),
 };
 const IN = {
+  newCatName: v => set({ newCatName: v, catErr: null }), newCatEmoji: v => set({ newCatEmoji: v, catErr: null }),
   draft: onDraft, newTag: v => set({ newTag: v }), newSub: v => set({ newSub: v }), bodyDraft: v => set({ bodyDraft: v }),
   query: v => set({ query: v, answer: null }), email: v => set({ email: v, loginErr: null }), code: v => set({ code: v.replace(/\D/g, '').slice(0, 10), loginErr: null }),
 };
@@ -377,6 +436,7 @@ const KD = {
   query: e => { if (e.key === 'Enter' && !e.isComposing && S.query.trim()) { e.preventDefault(); ask(); } },
   email: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); sendLink(); } },
   code: e => { if (e.key === 'Enter') { e.preventDefault(); verifyCode(); } },
+  newCatName: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addCat(); } },
 };
 root.addEventListener('click', e => {
   if (e.target.closest('.sheet')) clearTimeout(timer); // 시트를 만지면 자동 닫힘 멈춤
@@ -427,7 +487,7 @@ function render() {
   const navActive = S.tab;
   const tabs = [['write', '기록'], ['library', '서재'], ['timeline', '흐름'], ['search', '검색']];
   const cs = cats();
-  const counts = Object.fromEntries(CATS.map(c => [c.key, live().filter(n => n.cat === c.key).length]));
+  const counts = Object.fromEntries(cs.map(c => [c.key, live().filter(n => n.cat === c.key).length]));
   const showNav = !wide && !(S.screen === 'write' && draftLen > 0);
 
   let screen = '';
@@ -444,7 +504,7 @@ function render() {
     <div class="logo">생각서재</div>
     <nav>${each(tabs, ([k, l]) => `<button class="nav-item${navActive === k ? ' on' : ''}" ${act('go', k)}>${l}</button>`)}</nav>
     <div class="side-cats"><div class="label">분야</div>
-      ${each(CATS, c => `<div class="side-cat" ${act('openCat', c.key)}><span>${c.emoji} ${c.name}</span><span>${counts[c.key]}</span></div>`)}
+      ${each(cs, c => `<div class="side-cat" ${act('openCat', c.key)}><span>${c.emoji} ${c.name}</span><span>${counts[c.key]}</span></div>`)}
     </div>
     ${vSyncDot()}
   </aside>`)}
@@ -558,7 +618,7 @@ function vEditor(n, cs, filled) {
   const idA = ` data-id="${esc(n.id)}"`;
   return `<div class="editor${filled ? ' filled' : ''}">
     <div class="stack g8"><div class="label" style="letter-spacing:0.06em">분야</div>
-      <div class="row g6 wrap">${each(cs, o => `<button class="chip${o.key === n.cat ? ' on' : ''}" ${act('pickCat', o.key, idA)}>${o.emoji} ${o.name}</button>`)}</div></div>
+      <div class="row g6 wrap">${each(cs.filter(o => !o.virtual), o => `<button class="chip${o.key === n.cat ? ' on' : ''}" ${act('pickCat', o.key, idA)}>${o.emoji} ${o.name}</button>`)}</div></div>
     <div class="stack g8"><div class="label" style="letter-spacing:0.06em">세부 갈래</div>
       <div class="row g6 wrap">
         ${each(c ? c.subs : [], o => `<button class="chip${o.name === n.sub ? ' on' : ''}" ${act('pickSub', o.name, idA)}>${esc(o.name)}</button>`)}
@@ -645,8 +705,52 @@ function vLibrary(cs) {
     <div class="seg">${each([['shelf', '책장'], ['card', '카드'], ['tree', '트리']], ([k, l]) => `<button class="${S.libView === k ? 'on' : ''}" ${act('libView', k)}>${l}</button>`)}</div>
   </div>
   ${body}
+  ${vCatManager()}
   ${vManage()}
 </section>`;
+}
+
+function vCatManager() {
+  const list = getCats();
+  const count = key => live().filter(n => n.cat === key).length;
+  const head = `<div class="row between" style="align-items:center">
+      <div class="label">분야 관리</div>
+      <button class="link-accent" ${act('toggleCatMgr')}>${S.catMgr ? '닫기' : '분야 추가·삭제'}</button>
+    </div>`;
+  if (!S.catMgr) return `<div class="cat-mgr">${head}<div style="font-size:13.5px;color:var(--ink-2);line-height:1.6">${list.map(c => `${c.emoji} ${c.name}`).join(' · ')}</div></div>`;
+  const rows = each(list, c => {
+    const n = count(c.key);
+    if (S.delCat === c.key) {
+      const others = list.filter(o => o.key !== c.key);
+      return `<div class="cat-mgr-row del">
+        <div style="font-size:14.5px;font-weight:600">${c.emoji} ${c.name} 분야를 지울까요?</div>
+        ${n ? `<div style="font-size:13px;color:var(--ink-2);line-height:1.55">이 분야의 글 ${n}편을 옮길 분야를 골라 주세요. 갈래와 태그는 그대로 따라가요.</div>
+        <div class="row g6 wrap">${each(others, o => `<button class="chip${S.delTarget === o.key ? ' on' : ''}" ${act('delTarget', o.key)}>${o.emoji} ${o.name}</button>`)}</div>`
+        : `<div style="font-size:13px;color:var(--ink-2)">이 분야에는 글이 없어요.</div>`}
+        <div class="row g8" style="justify-content:flex-end">
+          <button class="btn-o" style="min-height:40px;padding:8px 16px" ${act('cancelDeleteCat')}>취소</button>
+          <button class="btn xs" style="background:var(--warn)" ${act('deleteCat')}>${n ? '옮기고 삭제' : '삭제'}</button>
+        </div>
+      </div>`;
+    }
+    return `<div class="cat-mgr-row">
+      <span class="row g10"><span class="swatch" style="background:${catColor(c.hue)}"></span>${c.emoji} ${c.name}<span style="color:var(--ink-3);font-size:13px">${n}편</span></span>
+      <button class="btn-danger" style="min-height:40px;padding:6px 8px" aria-label="${c.name} 분야 삭제" ${act('askDeleteCat', c.key)} ${list.length <= 1 ? 'disabled' : ''}>삭제</button>
+    </div>`;
+  });
+  return `<div class="cat-mgr">
+    ${head}
+    <div style="font-size:12.5px;color:var(--ink-3);line-height:1.6">저장할 때 AI가 이 분야들 중에서 골라요. 갈래(세부 분류)는 글에 맞춰 저절로 자라요.</div>
+    <div class="stack">${rows}</div>
+    ${list.length < MAX_CATS ? `<div class="row g8 wrap" style="margin-top:4px">
+      <input class="field" style="flex:0 0 72px;text-align:center" maxlength="4" placeholder="📁" aria-label="분야 이모지" value="${esc(S.newCatEmoji)}" data-in="newCatEmoji">
+      <input class="field" style="min-width:140px" maxlength="10" placeholder="새 분야 이름 (예: 신앙, 여행)" aria-label="새 분야 이름" value="${esc(S.newCatName)}" data-in="newCatName" data-kd="newCatName">
+      <button class="btn sm" ${act('addCat')} ${S.newCatName.trim() ? '' : 'disabled'}>추가</button>
+    </div>` : `<div style="font-size:13px;color:var(--ink-3)">분야는 ${MAX_CATS}개까지 만들 수 있어요.</div>`}
+    ${x(S.catErr, `<div style="font-size:13px;color:var(--warn-ink)">${esc(S.catErr)}</div>`)}
+    ${x(sync.session() && sync.catsSupported() === false, `<div class="notice caution" style="font-size:12.5px">분야 목록은 아직 이 기기에만 저장돼요. 다른 기기와 맞추려면 Supabase에서 <b>supabase/add-categories.sql</b>을 한 번 실행해 주세요.</div>`)}
+    <button class="btn-t" style="align-self:flex-start;font-size:12.5px;color:var(--ink-3)" ${act('resetCats')}>기본 분야 6개로 되돌리기</button>
+  </div>`;
 }
 
 function vManage() {
@@ -746,7 +850,7 @@ function vTimeline() {
   const mNotes = all.filter(n => n.date.startsWith(monthKey()));
   let month = '';
   if (mNotes.length) {
-    const byCat = CATS.map(c => ({ c, count: mNotes.filter(n => n.cat === c.key).length })).filter(v => v.count).sort((a, b) => b.count - a.count);
+    const byCat = cats().map(c => ({ c, count: mNotes.filter(n => n.cat === c.key).length })).filter(v => v.count).sort((a, b) => b.count - a.count);
     const tagCount = {}; mNotes.forEach(n => n.tags.forEach(t => { tagCount[t] = (tagCount[t] || 0) + 1; }));
     const topTag = Object.entries(tagCount).sort((a, b) => b[1] - a[1])[0];
     const newSubs = []; cats().forEach(c => c.subs.forEach(sb => { if (sb.born.startsWith(monthKey())) newSubs.push(`${c.name} › ${sb.name}`); }));
@@ -856,8 +960,9 @@ async function boot() {
     render();
   });
   try {
-    const [notes, subBorn, lastExport, aiUsage, libView, landingDone] = await Promise.all([db.allNotes(), db.get('subBorn'), db.get('lastExport'), db.get('aiUsage'), db.get('libView'), db.get('landingDone')]);
+    const [notes, subBorn, lastExport, aiUsage, libView, landingDone, catsRec] = await Promise.all([db.allNotes(), db.get('subBorn'), db.get('lastExport'), db.get('aiUsage'), db.get('libView'), db.get('landingDone'), db.get('cats')]);
     Object.assign(S, { notes: notes || [], subBorn: subBorn || {}, lastExport: lastExport || null, aiUsage: aiUsage || {}, libView: libView || 'shelf', landingDone: !!landingDone });
+    if (catsRec && Array.isArray(catsRec.list)) { setCats(catsRec.list); Object.assign(S, { catsAt: catsRec.updatedAt || null, catsDirty: !!catsRec.dirty }); }
   } catch (e) {
     Object.assign(S, { toast: '이 브라우저에서는 기록을 저장할 수 없어요(비공개 모드인지 확인해 주세요).' });
   }

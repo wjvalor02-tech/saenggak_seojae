@@ -1,6 +1,6 @@
 // 로컬 저장소(IndexedDB). 모든 쓰기는 여기 먼저 들어가고, 동기화는 그 뒤에 따라온다.
 // 서버가 없거나 오프라인이어도 기록은 절대 사라지지 않게 하는 것이 목표.
-import { CATS, todayS } from './util.js';
+import { getCats, todayS } from './util.js';
 
 const DB_NAME = 'saenggak-seojae-app';
 let dbp = null;
@@ -44,10 +44,15 @@ export async function requestPersist() {
   try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) { /* 무시 */ }
 }
 
-// 분류 체계는 글에서 파생한다: 분야는 고정 6개, 갈래 = 그 분야 글들이 쓰는 sub 목록.
+// 분류 체계는 글에서 파생한다: 분야 = 사용자의 분야 목록, 갈래 = 그 분야 글들이 쓰는 sub 목록.
 // 갈래가 처음 생긴 날(born)만 별도 맵으로 기억한다. 글이 하나도 없는 갈래는 자연히 사라진다.
 export function deriveCats(notes, subBorn) {
-  return CATS.map(c => {
+  // 목록에 없는 분야를 가리키는 글(다른 기기에서 아직 분야 목록이 안 넘어온 경우 등)은
+  // '분류 안 됨' 칸에 모아 보여 준다. 이 칸은 분야 관리·분류 편집기에는 나오지 않는다.
+  const known = new Set(getCats().map(c => c.key));
+  const orphanKeys = [...new Set(notes.filter(n => !known.has(n.cat)).map(n => n.cat))];
+  const list = [...getCats(), ...orphanKeys.map(key => ({ key, name: '분류 안 됨', emoji: '📁', hue: 60, virtual: true }))];
+  return list.map(c => {
     const map = new Map();
     for (const n of notes) {
       if (n.cat !== c.key) continue;
@@ -69,11 +74,14 @@ export function normalizeImport(j) {
     const k = c.key + '/' + s.name;
     if (s.born && (!subBorn[k] || s.born < subBorn[k])) subBorn[k] = s.born;
   }));
-  const keys = new Set(CATS.map(c => c.key));
+  // 백업에 있던 분야 중 지금 목록에 없는 것은 함께 들여온다(글이 가리키는 분야를 잃지 않도록)
+  const fileCats = Array.isArray(j.cats) ? j.cats.filter(c => c && c.key && c.name).map(({ key, name, emoji, hue }) => ({ key, name, emoji, hue })) : [];
+  const keys = new Set([...getCats(), ...fileCats].map(c => c.key));
+  const fallback = keys.has('daily') ? 'daily' : getCats()[0].key;
   const notes = j.notes.filter(n => n && n.id && n.body).map(n => ({
     id: String(n.id),
     date: n.date || todayS(),
-    cat: keys.has(n.cat) ? n.cat : 'daily',
+    cat: keys.has(n.cat) ? n.cat : fallback,
     sub: String(n.sub || '생각'),
     tags: Array.isArray(n.tags) ? n.tags.map(String) : [],
     summary: String(n.summary || ''),
@@ -88,7 +96,7 @@ export function normalizeImport(j) {
     ...(n.deletedAt ? { deletedAt: n.deletedAt } : {}),
     dirty: true,
   }));
-  return { notes, subBorn };
+  return { notes, subBorn, fileCats };
 }
 
 // 서버/백업으로 내보낼 때 로컬 전용 필드는 뺀다

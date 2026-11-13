@@ -8,6 +8,7 @@ const anon = () => cfg().supabaseAnonKey || '';
 
 let session = null; // { access_token, refresh_token, expires_at, user: { id, email } }
 let syncing = null;
+let catsSupported = null;
 let listeners = [];
 let status = { state: 'idle', at: null, error: null }; // idle | syncing | ok | offline | error
 
@@ -92,6 +93,7 @@ function fromAuthResponse(j, fallbackUser) {
 
 export const sync = {
   configured: () => !!(base() && anon()),
+  catsSupported: () => catsSupported, // null: 아직 모름, true/false: 서버에 분야 열이 있는지
   session: () => session,
   status: () => status,
   subscribe(f) { listeners.push(f); return () => { listeners = listeners.filter(x => x !== f); }; },
@@ -203,8 +205,16 @@ export const sync = {
         }
         if (remote.length) await app.applyRemote(remote);
 
-        const mr = await authFetch('/rest/v1/meta?select=sub_born');
-        if (mr.ok) { const rows = await mr.json(); if (rows[0] && rows[0].sub_born) await app.mergeSubBorn(rows[0].sub_born); }
+        // 갈래 생일 + 분야 목록. 분야 열(cats)은 add-categories.sql을 실행해야 생기므로,
+        // 없으면(400) 갈래 생일만 받고 분야 목록은 이 기기에만 둔다.
+        let mr = await authFetch('/rest/v1/meta?select=sub_born,cats,cats_updated_at');
+        if (mr.status === 400) { catsSupported = false; mr = await authFetch('/rest/v1/meta?select=sub_born'); }
+        else if (mr.ok) catsSupported = true;
+        if (mr.ok) {
+          const row = (await mr.json())[0];
+          if (row && row.sub_born) await app.mergeSubBorn(row.sub_born);
+          if (row && row.cats && app.mergeCats) await app.mergeCats({ list: row.cats, updatedAt: row.cats_updated_at });
+        }
 
         // 2) 보내기
         const dirty = app.getNotes().filter(n => n.dirty);
@@ -225,6 +235,14 @@ export const sync = {
           method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal,missing=default' },
           body: JSON.stringify([{ sub_born: sb }]),
         });
+        const dc = catsSupported && app.getCatsDirty ? app.getCatsDirty() : null;
+        if (dc) {
+          const r = await authFetch('/rest/v1/meta?on_conflict=user_id', {
+            method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal,missing=default' },
+            body: JSON.stringify([{ cats: dc.list, cats_updated_at: dc.updatedAt }]),
+          });
+          if (r.ok) await app.markCatsClean(dc.updatedAt);
+        }
 
         await db.set('lastPull', maxPull);
         setStatus({ state: 'ok', at: new Date().toISOString(), error: null });
