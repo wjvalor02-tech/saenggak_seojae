@@ -1,0 +1,1121 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&display=swap">
+<style>
+html,body{margin:0;padding:0;background:#F5F2EB;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+a{color:#2F5A4B}a:hover{color:#1F4033}
+textarea::placeholder,input::placeholder{color:#A69E92}
+button{font:inherit}
+</style>
+</helmet>
+<div style="min-height:100vh;background:#F5F2EB;color:#2B2722;font-family:Pretendard,-apple-system,'Apple SD Gothic Neo',sans-serif;display:flex;word-break:keep-all">
+
+<sc-if value="{{ isWide }}" hint-placeholder-val="{{ true }}">
+<aside style="width:240px;flex-shrink:0;position:sticky;top:0;height:100vh;border-right:1px solid #E3DDD1;padding:40px 24px;display:flex;flex-direction:column;gap:36px;overflow-y:auto">
+  <div style="font-family:'Gowun Batang',serif;font-size:22px;font-weight:700;letter-spacing:-0.01em">생각서재</div>
+  <nav style="display:flex;flex-direction:column;gap:2px">
+    <sc-for list="{{ navItems }}" as="it" hint-placeholder-count="4">
+      <sc-if value="{{ it.active }}"><div onClick="{{ it.go }}" style="padding:10px 12px;border-radius:8px;background:#EAE5DA;font-size:15px;font-weight:600;cursor:pointer">{{ it.label }}</div></sc-if>
+      <sc-if value="{{ it.inactive }}"><div onClick="{{ it.go }}" style="padding:10px 12px;border-radius:8px;font-size:15px;color:#5F584F;cursor:pointer" style-hover="background:#EFEBE2">{{ it.label }}</div></sc-if>
+    </sc-for>
+  </nav>
+  <div style="display:flex;flex-direction:column;gap:4px">
+    <div style="font-size:12px;color:#857D72;letter-spacing:0.08em;padding:0 12px 8px">분야</div>
+    <sc-for list="{{ libCats }}" as="c" hint-placeholder-count="5">
+      <div onClick="{{ c.open }}" style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-radius:8px;font-size:14px;color:#2B2722;cursor:pointer" style-hover="background:#EFEBE2">
+        <span>{{ c.emoji }} {{ c.name }}</span><span style="color:#857D72;font-size:13px">{{ c.count }}</span>
+      </div>
+    </sc-for>
+  </div>
+</aside>
+</sc-if>
+
+<input type="file" accept=".json,application/json" ref="{{ fileRef }}" onChange="{{ importData }}" style="display:none">
+<main style="flex:1;min-width:0;display:flex;justify-content:center;padding:clamp(28px,6vw,64px) clamp(20px,5vw,48px) 128px">
+<div style="width:100%;max-width:660px">
+
+<sc-if value="{{ isNarrow }}">
+  <div style="font-family:'Gowun Batang',serif;font-size:17px;font-weight:700;margin-bottom:28px;color:#5F584F">생각서재</div>
+</sc-if>
+
+<!-- 1·2. 빠른 기록 + 저장 피드백 -->
+<sc-if value="{{ onWrite }}" hint-placeholder-val="{{ true }}">
+<section data-screen-label="01 빠른 기록" style="display:flex;flex-direction:column;gap:20px">
+  <sc-if value="{{ notTyping }}"><div style="font-size:14px;color:#857D72">{{ todayLabel }}</div></sc-if>
+  <sc-if value="{{ typing }}"><div style="font-size:14px;color:#CFC7BA">{{ todayLabel }}</div></sc-if>
+
+  <sc-if value="{{ bookLoading }}">
+    <div style="display:flex;align-items:center;gap:10px;font-size:13.5px;color:#857D72;padding:2px 0"><span style="width:6px;height:6px;border-radius:50%;background:#2F5A4B;opacity:0.6"></span>책 정보를 찾는 중…</div>
+  </sc-if>
+  <sc-if value="{{ bookFound }}">
+    <div style="display:flex;gap:14px;align-items:flex-start;background:#FBF9F5;border:1px solid #E3DDD1;border-radius:12px;padding:14px 8px 14px 16px">
+      <div style="width:34px;height:46px;flex-shrink:0;border-radius:2px 4px 4px 2px;background:oklch(0.42 0.06 25);box-shadow:inset 3px 0 0 rgba(0,0,0,0.15)"></div>
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
+        <div style="font-family:'Gowun Batang',serif;font-size:16.5px;font-weight:700;line-height:1.4">『{{ draftBook.title }}』</div>
+        <sc-if value="{{ draftBook.hasMeta }}"><div style="font-size:13.5px;color:#5F584F;line-height:1.5">{{ draftBook.meta }}</div></sc-if>
+        <div style="font-size:12px;color:#A69E92">{{ draftBook.note }}</div>
+      </div>
+      <button onClick="{{ dismissBook }}" aria-label="책 정보 지우기" style="border:none;background:none;color:#857D72;font-size:18px;width:44px;height:44px;cursor:pointer;flex-shrink:0">×</button>
+    </div>
+  </sc-if>
+
+  <textarea ref="{{ taRef }}" value="{{ draft }}" onChange="{{ onDraft }}" onKeyDown="{{ onDraftKey }}" placeholder="떠오르는 생각을 그대로 적어보세요." style="width:100%;min-height:56vh;border:none;outline:none;background:transparent;resize:none;font-family:'Gowun Batang',serif;font-size:21px;line-height:1.95;color:#2B2722;padding:0"></textarea>
+
+  <sc-if value="{{ hasVoiceErr }}">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13.5px;color:#7A3426;background:#F3E3DE;border-radius:14px;padding:6px 6px 6px 16px">{{ voiceErr }}<button onClick="{{ closeVoiceErr }}" aria-label="닫기" style="border:none;background:none;color:#7A3426;font-size:18px;width:40px;height:40px;cursor:pointer;flex-shrink:0">×</button></div>
+  </sc-if>
+  <sc-if value="{{ checkLoading }}">
+    <div style="display:flex;align-items:center;gap:10px;font-size:14px;color:#5F584F;background:#FBF9F5;border:1px solid #E3DDD1;border-radius:14px;padding:16px 18px"><span style="width:7px;height:7px;border-radius:50%;background:#2F5A4B;opacity:0.6"></span>사실관계를 확인할 부분을 찾는 중…</div>
+  </sc-if>
+  <sc-if value="{{ checkFail }}">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:14px;color:#5F584F;background:#FBF9F5;border:1px solid #E3DDD1;border-radius:14px;padding:8px 8px 8px 18px">{{ checkFailMsg }}<button onClick="{{ closeCheck }}" aria-label="닫기" style="border:none;background:none;color:#857D72;font-size:18px;width:40px;height:40px;cursor:pointer">×</button></div>
+  </sc-if>
+  <sc-if value="{{ checkEmpty }}">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:14px;color:#2F5A4B;background:#E3EBE4;border-radius:14px;padding:8px 8px 8px 18px">따로 확인할 내용이 없어요.<button onClick="{{ closeCheck }}" aria-label="닫기" style="border:none;background:none;color:#2F5A4B;font-size:18px;width:40px;height:40px;cursor:pointer">×</button></div>
+  </sc-if>
+  <sc-if value="{{ checkDone }}">
+    <div style="background:#FBF9F5;border:1px solid #E3DDD1;border-radius:14px;padding:16px 8px 6px 18px;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding-right:10px">
+        <span style="font-size:14px;font-weight:600">확인해 볼 내용 {{ checkCount }}</span>
+        <button onClick="{{ closeCheck }}" style="border:none;background:none;color:#857D72;font-size:13px;cursor:pointer;padding:6px 0">모두 닫기</button>
+      </div>
+      <div style="font-size:12.5px;color:#857D72;line-height:1.5;padding:4px 10px 6px 0">AI가 아는 범위의 검토예요. 고치지 않고 저장하면 이 목록이 글에 함께 남아요.</div>
+      <sc-for list="{{ checkItems }}" as="c">
+        <div style="display:flex;gap:6px;border-top:1px solid #E3DDD1;padding:14px 0 12px">
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+              <sc-if value="{{ c.isErr }}"><span style="font-size:11.5px;font-weight:600;color:#9A4A3A;background:#F3E3DE;border-radius:4px;padding:2px 7px;flex-shrink:0;white-space:nowrap">오류 가능</span></sc-if>
+              <sc-if value="{{ c.isRec }}"><span style="font-size:11.5px;font-weight:600;color:#7A5A1E;background:#F3EAD3;border-radius:4px;padding:2px 7px;flex-shrink:0;white-space:nowrap">확인 권장</span></sc-if>
+              <sc-if value="{{ c.hasQuote }}"><span style="font-family:'Gowun Batang',serif;font-size:15px;line-height:1.5;background:#F3EAD3;padding:0 3px">{{ c.quote }}</span></sc-if>
+            </div>
+            <div style="font-size:14.5px;line-height:1.55;color:#2B2722">{{ c.issue }}</div>
+            <sc-if value="{{ c.hasNote }}"><div style="font-size:13.5px;line-height:1.55;color:#5F584F">{{ c.note }}</div></sc-if>
+          </div>
+          <button onClick="{{ c.remove }}" aria-label="이 항목 지우기" style="border:none;background:none;color:#857D72;font-size:18px;width:40px;height:40px;cursor:pointer;flex-shrink:0">×</button>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;padding-top:8px">
+    <div style="display:flex;align-items:center;gap:12px;min-width:0">
+      <sc-if value="{{ showMic }}">
+        <sc-if value="{{ notListening }}"><button onClick="{{ toggleVoice }}" aria-label="음성으로 기록" style="width:48px;height:48px;flex-shrink:0;border-radius:50%;border:1px solid #D6CFC1;background:transparent;color:#2B2722;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"></path></svg></button></sc-if>
+        <sc-if value="{{ listening }}"><button onClick="{{ toggleVoice }}" aria-label="음성 입력 멈추기" style="width:48px;height:48px;flex-shrink:0;border-radius:50%;border:none;background:#9A4A3A;color:#FBF9F5;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;box-shadow:0 0 0 6px #F3E3DE"><span style="width:14px;height:14px;border-radius:3px;background:#FBF9F5;display:block"></span></button></sc-if>
+      </sc-if>
+      <sc-if value="{{ listening }}"><span style="font-size:13px;color:#9A4A3A">듣고 있어요… 말을 마치면 ■</span></sc-if>
+      <sc-if value="{{ notListening }}"><span style="font-size:13px;color:#857D72">{{ footHint }}</span></sc-if>
+    </div>
+    <sc-if value="{{ canSave }}"><div style="display:flex;gap:6px;align-items:center;flex-shrink:0"><button onClick="{{ runCheck }}" style="border:1px solid #D6CFC1;background:transparent;color:#5F584F;border-radius:999px;padding:12px 16px;font-size:14px;cursor:pointer;min-height:48px">{{ checkLabel }}</button><button onClick="{{ save }}" style="border:none;background:#2B2722;color:#FBF9F5;border-radius:999px;padding:13px 28px;font-size:15px;font-weight:600;cursor:pointer;min-height:48px">저장</button></div></sc-if>
+    <sc-if value="{{ cantSave }}"><button style="border:none;background:#E3DDD1;color:#857D72;border-radius:999px;padding:13px 28px;font-size:15px;font-weight:600;min-height:48px">저장</button></sc-if>
+  </div>
+
+  <sc-if value="{{ showRestore }}">
+    <div style="margin-top:32px;background:#FBF9F5;border:1px solid #E3DDD1;border-radius:14px;padding:18px 20px;display:flex;flex-direction:column;gap:12px">
+      <div style="font-size:14.5px;line-height:1.6;color:#2B2722">{{ restoreText }}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button onClick="{{ restorePrimaryAct }}" style="border:none;background:#2B2722;color:#FBF9F5;border-radius:999px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;min-height:44px">{{ restorePrimary }}</button>
+        <sc-if value="{{ restoreSecondary }}"><button onClick="{{ openFile }}" style="border:1px solid #D6CFC1;background:transparent;color:#2B2722;border-radius:999px;padding:10px 18px;font-size:14px;cursor:pointer;min-height:44px">기록 파일 열기</button></sc-if>
+      </div>
+    </div>
+  </sc-if>
+  <sc-if value="{{ showUnbacked }}">
+    <div style="margin-top:28px;background:#F3EAD3;border-radius:14px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <span style="font-size:13.5px;line-height:1.55;color:#5A4416;flex:1;min-width:200px">{{ unbackedLabel }}</span>
+      <button onClick="{{ linkFile }}" style="border:none;background:#2B2722;color:#FBF9F5;border-radius:999px;padding:9px 16px;font-size:13.5px;font-weight:600;cursor:pointer;min-height:40px;flex-shrink:0">{{ unbackedBtn }}</button>
+    </div>
+  </sc-if>
+  <sc-if value="{{ hasFileErr }}">
+    <div style="margin-top:28px;background:#F3E3DE;border-radius:14px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <span style="font-size:13.5px;color:#7A3426;flex:1;min-width:200px">{{ fileErr }}</span>
+      <button onClick="{{ linkFile }}" style="border:none;background:#2B2722;color:#FBF9F5;border-radius:999px;padding:9px 16px;font-size:13.5px;font-weight:600;cursor:pointer;min-height:40px">다시 연결</button>
+    </div>
+  </sc-if>
+  <sc-if value="{{ showRecent }}">
+  <div style="margin-top:40px;display:flex;flex-direction:column;gap:4px">
+    <div style="font-size:12px;color:#857D72;letter-spacing:0.08em;margin-bottom:6px">최근에 남긴 생각</div>
+    <sc-for list="{{ recent }}" as="n" hint-placeholder-count="3">
+      <div onClick="{{ n.open }}" style="display:flex;gap:14px;align-items:baseline;padding:10px 0;cursor:pointer">
+        <span style="font-size:12.5px;color:#857D72;width:44px;flex-shrink:0">{{ n.rel }}</span>
+        <span style="font-size:14.5px;color:#5F584F;line-height:1.5">{{ n.summary }}</span>
+      </div>
+    </sc-for>
+  </div>
+  </sc-if>
+</section>
+</sc-if>
+
+<!-- 3. 서재 -->
+<sc-if value="{{ onLibrary }}">
+<section data-screen-label="03 서재" style="display:flex;flex-direction:column;gap:28px">
+  <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap">
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <h1 style="margin:0;font-family:'Gowun Batang',serif;font-size:34px;font-weight:700">서재</h1>
+      <div style="font-size:14.5px;color:#5F584F;line-height:1.6">{{ libSubtitle }}</div>
+    </div>
+    <div style="display:flex;background:#EAE5DA;border-radius:999px;padding:3px">
+      <sc-for list="{{ viewOpts }}" as="v">
+        <sc-if value="{{ v.active }}"><button onClick="{{ v.pick }}" style="border:none;background:#FBF9F5;border-radius:999px;padding:7px 16px;font-size:13px;font-weight:600;color:#2B2722;cursor:pointer">{{ v.label }}</button></sc-if>
+        <sc-if value="{{ v.inactive }}"><button onClick="{{ v.pick }}" style="border:none;background:transparent;border-radius:999px;padding:7px 16px;font-size:13px;color:#5F584F;cursor:pointer">{{ v.label }}</button></sc-if>
+      </sc-for>
+    </div>
+  </div>
+
+  <sc-if value="{{ libIsShelf }}">
+    <div style="display:flex;flex-direction:column;gap:28px">
+      <div style="display:flex;flex-direction:column">
+        <div style="display:flex;align-items:flex-end;gap:6px;height:264px;padding:0 10px;overflow-x:auto">
+          <sc-for list="{{ shelf.books }}" as="b" hint-placeholder-count="6">
+            <sc-if value="{{ b.active }}"><div onClick="{{ b.pick }}" style="flex-shrink:0;width:{{ b.w }};height:{{ b.h }};background:{{ b.color }};border-radius:4px 4px 0 0;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:14px 0 12px;color:#FBF9F5;box-shadow:inset -3px 0 0 rgba(0,0,0,0.14);outline:2px solid #2B2722;outline-offset:3px;cursor:pointer"><span style="writing-mode:vertical-rl;font-family:'Gowun Batang',serif;font-size:17px;font-weight:700;letter-spacing:0.12em">{{ b.name }}</span><span style="font-size:12px">{{ b.count }}</span></div></sc-if>
+            <sc-if value="{{ b.inactive }}"><div onClick="{{ b.pick }}" style="flex-shrink:0;width:{{ b.w }};height:{{ b.h }};background:{{ b.color }};border-radius:4px 4px 0 0;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:14px 0 12px;color:#FBF9F5;box-shadow:inset -3px 0 0 rgba(0,0,0,0.14);cursor:pointer;opacity:0.92" style-hover="opacity:1"><span style="writing-mode:vertical-rl;font-family:'Gowun Batang',serif;font-size:16px;font-weight:700;letter-spacing:0.12em">{{ b.name }}</span><span style="font-size:12px">{{ b.count }}</span></div></sc-if>
+          </sc-for>
+        </div>
+        <div style="height:10px;background:#D6CFC1;border-radius:2px"></div>
+      </div>
+      <div style="display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;padding-bottom:10px">
+          <span style="font-family:'Gowun Batang',serif;font-size:21px;font-weight:700">{{ shelf.open.emoji }} {{ shelf.open.name }}의 목차</span>
+          <span onClick="{{ shelf.open.openAll }}" style="font-size:13px;color:#2F5A4B;cursor:pointer;padding:6px 0">전체 {{ shelf.open.count }}편 →</span>
+        </div>
+        <sc-for list="{{ shelf.open.chapters }}" as="ch">
+          <div onClick="{{ ch.open }}" style="display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-top:1px solid #E3DDD1;font-size:15.5px;cursor:pointer" style-hover="color:#2F5A4B">
+            <span style="display:flex;align-items:center;gap:10px"><span style="color:#857D72;width:28px">{{ ch.no }}</span>{{ ch.name }}<sc-if value="{{ ch.isNew }}"><span style="font-size:11px;color:#2F5A4B;background:#E3EBE4;border-radius:4px;padding:2px 6px">새 갈래</span></sc-if></span>
+            <span style="color:#857D72;font-size:13px">{{ ch.count }}</span>
+          </div>
+        </sc-for>
+        <sc-if value="{{ shelf.open.noChapters }}"><div style="border-top:1px solid #E3DDD1;padding:16px 0;font-size:14.5px;color:#857D72">아직 갈래가 없어요. 이 분야의 글이 쌓이면 목차가 생겨요.</div></sc-if>
+        <sc-if value="{{ shelf.open.hasLatest }}"><div onClick="{{ shelf.open.latestOpen }}" style="border-top:1px solid #E3DDD1;padding-top:16px;display:flex;flex-direction:column;gap:6px;cursor:pointer">
+          <span style="font-size:12px;color:#857D72;letter-spacing:0.06em">가장 최근 페이지 · {{ shelf.open.last }}</span>
+          <span style="font-family:'Gowun Batang',serif;font-size:16.5px;line-height:1.6">“{{ shelf.open.latest }}”</span>
+        </div></sc-if>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ libIsCard }}">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px">
+      <sc-for list="{{ libCats }}" as="c" hint-placeholder-count="5">
+        <div onClick="{{ c.open }}" style="background:#FBF9F5;border:1px solid #E3DDD1;border-radius:16px;padding:22px;display:flex;flex-direction:column;gap:16px;cursor:pointer" style-hover="border-color:#CFC7B8">
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <span style="font-family:'Gowun Batang',serif;font-size:21px;font-weight:700">{{ c.emoji }} {{ c.name }}</span>
+            <span style="font-size:13px;color:#857D72">{{ c.last }}</span>
+          </div>
+          <div style="font-family:'Gowun Batang',serif;font-size:15px;color:#5F584F;line-height:1.55;min-height:46px">{{ c.latest }}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            <sc-for list="{{ c.subs }}" as="sb">
+              <span onClick="{{ sb.open }}" style="font-size:12.5px;color:#5F584F;background:#EFEBE2;border-radius:999px;padding:5px 10px;display:flex;gap:5px;align-items:center">
+                <sc-if value="{{ sb.isNew }}"><span style="width:5px;height:5px;border-radius:50%;background:#2F5A4B"></span></sc-if>{{ sb.name }} <span style="color:#857D72">{{ sb.count }}</span>
+              </span>
+            </sc-for>
+          </div>
+          <div style="font-size:13px;color:#857D72;border-top:1px solid #E3DDD1;padding-top:12px">{{ c.countLabel }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ libIsTree }}">
+    <div style="display:flex;flex-direction:column">
+      <sc-for list="{{ libCats }}" as="c" hint-placeholder-count="5">
+        <div style="border-bottom:1px solid #E3DDD1;padding:18px 0;display:flex;flex-direction:column;gap:6px">
+          <div onClick="{{ c.open }}" style="display:flex;justify-content:space-between;align-items:baseline;cursor:pointer;padding:4px 0">
+            <span style="font-family:'Gowun Batang',serif;font-size:19px;font-weight:700">{{ c.emoji }} {{ c.name }} <span style="font-family:Pretendard,sans-serif;font-size:13px;font-weight:400;color:#857D72;margin-left:4px">{{ c.count }}</span></span>
+            <span style="font-size:13px;color:#857D72">{{ c.last }}</span>
+          </div>
+          <div style="margin-left:9px;border-left:1px solid #D9D2C4;display:flex;flex-direction:column">
+            <sc-for list="{{ c.subs }}" as="sb">
+              <div onClick="{{ sb.open }}" style="display:flex;justify-content:space-between;padding:9px 0 9px 18px;font-size:14.5px;color:#5F584F;cursor:pointer" style-hover="color:#2B2722">
+                <span style="display:flex;align-items:center;gap:8px">{{ sb.name }}<sc-if value="{{ sb.isNew }}"><span style="font-size:11px;color:#2F5A4B;background:#E3EBE4;border-radius:4px;padding:2px 6px">새 갈래</span></sc-if></span>
+                <span style="color:#857D72;font-size:13px">{{ sb.count }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+  <div style="margin-top:24px;border-top:1px solid #E3DDD1;padding-top:20px;display:flex;flex-direction:column;gap:12px">
+    <div style="font-size:12px;color:#857D72;letter-spacing:0.08em">내 기록 관리</div>
+    <sc-if value="{{ fileLinked }}"><div style="font-size:13.5px;color:#2F5A4B;display:flex;align-items:center;gap:8px"><span style="width:6px;height:6px;border-radius:50%;background:#2F5A4B"></span>{{ fileLinkLabel }}</div></sc-if>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button onClick="{{ linkFile }}" style="border:none;background:#2B2722;color:#FBF9F5;border-radius:999px;padding:10px 16px;font-size:13.5px;cursor:pointer;min-height:44px">{{ linkBtnLabel }}</button>
+      <button onClick="{{ openFile }}" style="border:1px solid #D6CFC1;background:transparent;color:#2B2722;border-radius:999px;padding:10px 16px;font-size:13.5px;cursor:pointer;min-height:44px">{{ openBtnLabel }}</button>
+      <button onClick="{{ resetAll }}" style="border:none;background:transparent;color:#9A4A3A;border-radius:999px;padding:10px 12px;font-size:13.5px;cursor:pointer;min-height:44px">전체 초기화</button>
+
+    </div>
+  </div>
+</section>
+</sc-if>
+
+<!-- 3-1. 분야 상세 -->
+<sc-if value="{{ onCategory }}">
+<section data-screen-label="03-1 분야" style="display:flex;flex-direction:column;gap:24px">
+  <button onClick="{{ backToLibrary }}" style="align-self:flex-start;border:none;background:none;padding:6px 0;color:#5F584F;font-size:14px;cursor:pointer">← 서재</button>
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <h1 style="margin:0;font-family:'Gowun Batang',serif;font-size:32px;font-weight:700">{{ catView.emoji }} {{ catView.name }}</h1>
+    <div style="font-size:14px;color:#5F584F">{{ catView.countLabel }} · 마지막 기록 {{ catView.last }}</div>
+  </div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap">
+    <sc-for list="{{ catView.chips }}" as="o">
+      <sc-if value="{{ o.active }}"><button onClick="{{ o.pick }}" style="border:1px solid #2B2722;background:#2B2722;color:#FBF9F5;border-radius:999px;padding:7px 14px;font-size:13px;cursor:pointer">{{ o.label }}</button></sc-if>
+      <sc-if value="{{ o.inactive }}"><button onClick="{{ o.pick }}" style="border:1px solid #E3DDD1;background:transparent;color:#5F584F;border-radius:999px;padding:7px 14px;font-size:13px;cursor:pointer">{{ o.label }}</button></sc-if>
+    </sc-for>
+  </div>
+  <div style="border-top:1px solid #E3DDD1">
+    <sc-for list="{{ catView.notes }}" as="n">
+      <div onClick="{{ n.open }}" style="padding:20px 0;border-bottom:1px solid #E3DDD1;cursor:pointer;display:flex;flex-direction:column;gap:6px">
+        <div style="font-size:12.5px;color:#857D72">{{ n.date }} · {{ n.sub }}</div>
+        <sc-if value="{{ n.hasBook }}"><div style="font-size:13px;color:#5F584F">📖 {{ n.bookLine }}</div></sc-if>
+        <div style="font-family:'Gowun Batang',serif;font-size:18px;line-height:1.5;text-wrap:pretty">{{ n.summary }}</div>
+        <div style="font-size:14px;line-height:1.65;color:#5F584F;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ n.body }}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><sc-for list="{{ n.tags }}" as="t"><span style="font-size:12.5px;color:#2F5A4B">{{ t.t }}</span></sc-for></div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+</sc-if>
+
+<!-- 4. 글 상세 -->
+<sc-if value="{{ onDetail }}">
+<article data-screen-label="04 글 상세" style="display:flex;flex-direction:column;gap:28px">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+    <button onClick="{{ back }}" style="border:none;background:none;padding:6px 0;color:#5F584F;font-size:14px;cursor:pointer">← {{ backLabel }}</button>
+    <sc-if value="{{ notBodyEditing }}"><button onClick="{{ startBodyEdit }}" style="border:1px solid #D6CFC1;background:transparent;color:#2B2722;border-radius:999px;padding:8px 16px;font-size:13.5px;cursor:pointer;min-height:40px">글 수정</button></sc-if>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <div style="font-size:13.5px;color:#5F584F;display:flex;gap:8px;flex-wrap:wrap"><span>{{ det.emoji }} {{ det.path }}</span><span style="color:#B3AA9C">·</span><span>{{ det.date }}</span><button onClick="{{ toggleDetEdit }}" style="border:none;background:none;padding:0 0 0 4px;color:#2F5A4B;font-size:13px;font-weight:600;cursor:pointer">{{ detEditLabel }}</button></div>
+    <sc-if value="{{ detEditing }}">
+      <div style="display:flex;flex-direction:column;gap:14px;border:1px solid #E3DDD1;background:#FBF9F5;border-radius:12px;padding:14px;margin:4px 0">
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:12px;color:#857D72;letter-spacing:0.06em">분야</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            <sc-for list="{{ detEd.cats }}" as="o">
+              <sc-if value="{{ o.active }}"><button onClick="{{ o.pick }}" style="border:1px solid #2F5A4B;background:#2F5A4B;color:#FBF9F5;border-radius:999px;padding:8px 12px;font-size:13px;cursor:pointer">{{ o.label }}</button></sc-if>
+              <sc-if value="{{ o.inactive }}"><button onClick="{{ o.pick }}" style="border:1px solid #E3DDD1;background:transparent;color:#2B2722;border-radius:999px;padding:8px 12px;font-size:13px;cursor:pointer">{{ o.label }}</button></sc-if>
+            </sc-for>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:12px;color:#857D72;letter-spacing:0.06em">세부 갈래</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+            <sc-for list="{{ detEd.subs }}" as="o">
+              <sc-if value="{{ o.active }}"><button onClick="{{ o.pick }}" style="border:1px solid #2F5A4B;background:#2F5A4B;color:#FBF9F5;border-radius:999px;padding:8px 12px;font-size:13px;cursor:pointer">{{ o.label }}</button></sc-if>
+              <sc-if value="{{ o.inactive }}"><button onClick="{{ o.pick }}" style="border:1px solid #E3DDD1;background:transparent;color:#2B2722;border-radius:999px;padding:8px 12px;font-size:13px;cursor:pointer">{{ o.label }}</button></sc-if>
+            </sc-for>
+            <input value="{{ detEd.newSub }}" onChange="{{ detEd.onNewSub }}" onKeyDown="{{ detEd.onNewSubKey }}" placeholder="+ 새 갈래 이름" style="border:1px dashed #D6CFC1;border-radius:999px;background:transparent;outline:none;font-size:13px;padding:8px 12px;width:128px;color:#2B2722;font-family:inherit">
+            <sc-if value="{{ detEd.canAdd }}"><button onClick="{{ detEd.addSub }}" style="border:none;background:#2B2722;color:#FBF9F5;border-radius:999px;padding:8px 14px;font-size:13px;cursor:pointer">추가</button></sc-if>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+    <div style="display:flex;gap:10px;flex-wrap:wrap"><sc-for list="{{ det.tags }}" as="t"><span style="font-size:14px;color:#2F5A4B">{{ t.t }}</span></sc-for></div>
+  </div>
+  <sc-if value="{{ det.hasBook }}">
+    <div style="display:flex;gap:16px;align-items:center;border-top:1px solid #E3DDD1;border-bottom:1px solid #E3DDD1;padding:16px 0">
+      <div style="width:40px;height:56px;flex-shrink:0;border-radius:2px 4px 4px 2px;background:oklch(0.42 0.06 25);box-shadow:inset 3px 0 0 rgba(0,0,0,0.15)"></div>
+      <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+        <div style="font-family:'Gowun Batang',serif;font-size:18px;font-weight:700;line-height:1.4">{{ det.bookTitle }}</div>
+        <div style="font-size:13.5px;color:#5F584F;line-height:1.5">{{ det.bookMeta }}</div>
+      </div>
+    </div>
+  </sc-if>
+  <sc-if value="{{ bodyEditing }}">
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <textarea value="{{ bodyDraft }}" onChange="{{ onBodyDraft }}" onKeyDown="{{ onBodyKey }}" style="width:100%;min-height:50vh;border:1px solid #E3DDD1;border-radius:12px;outline:none;background:#FBF9F5;resize:vertical;font-family:'Gowun Batang',serif;font-size:19px;line-height:1.95;color:#2B2722;padding:18px 20px"></textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <button onClick="{{ deleteNote }}" style="border:none;background:transparent;color:#9A4A3A;font-size:13.5px;cursor:pointer;padding:10px 4px;min-height:44px">글 삭제</button>
+        <div style="display:flex;gap:8px">
+          <button onClick="{{ cancelBodyEdit }}" style="border:1px solid #D6CFC1;background:transparent;color:#5F584F;border-radius:999px;padding:12px 18px;font-size:14px;cursor:pointer;min-height:46px">취소</button>
+          <sc-if value="{{ canSaveBody }}"><button onClick="{{ saveBody }}" style="border:none;background:#2B2722;color:#FBF9F5;border-radius:999px;padding:12px 24px;font-size:14.5px;font-weight:600;cursor:pointer;min-height:46px">수정 저장</button></sc-if>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+  <sc-if value="{{ notBodyEditing }}">
+  <div style="display:flex;flex-direction:column;gap:18px">
+    <sc-if value="{{ detWasEdited }}"><div style="font-size:12.5px;color:#857D72">{{ detEditedLabel }}</div></sc-if>
+    <sc-for list="{{ det.paras }}" as="p"><p style="margin:0;font-family:'Gowun Batang',serif;font-size:19px;line-height:1.95;color:#2B2722;text-wrap:pretty">{{ p.p }}</p></sc-for>
+  </div>
+  </sc-if>
+  <sc-if value="{{ hasDetChecks }}">
+    <div style="border:1px solid #E3DDD1;background:#FBF9F5;border-radius:14px;padding:16px 8px 6px 18px;display:flex;flex-direction:column">
+      <div style="font-size:12px;color:#5F584F;letter-spacing:0.08em;padding-bottom:8px">아직 확인하지 않은 내용</div>
+      <sc-for list="{{ detChecks }}" as="c">
+        <div style="display:flex;gap:6px;border-top:1px solid #E3DDD1;padding:14px 0 12px">
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+              <sc-if value="{{ c.isErr }}"><span style="font-size:11.5px;font-weight:600;color:#9A4A3A;background:#F3E3DE;border-radius:4px;padding:2px 7px;flex-shrink:0;white-space:nowrap">오류 가능</span></sc-if>
+              <sc-if value="{{ c.isRec }}"><span style="font-size:11.5px;font-weight:600;color:#7A5A1E;background:#F3EAD3;border-radius:4px;padding:2px 7px;flex-shrink:0;white-space:nowrap">확인 권장</span></sc-if>
+              <sc-if value="{{ c.hasQuote }}"><span style="font-family:'Gowun Batang',serif;font-size:15px;line-height:1.5;background:#F3EAD3;padding:0 3px">{{ c.quote }}</span></sc-if>
+            </div>
+            <div style="font-size:14.5px;line-height:1.55;color:#2B2722">{{ c.issue }}</div>
+            <sc-if value="{{ c.hasNote }}"><div style="font-size:13.5px;line-height:1.55;color:#5F584F">{{ c.note }}</div></sc-if>
+          </div>
+          <button onClick="{{ c.remove }}" style="border:1px solid #D6CFC1;background:transparent;color:#2F5A4B;border-radius:999px;font-size:12.5px;padding:0 12px;height:36px;cursor:pointer;flex-shrink:0;align-self:flex-start;margin-right:10px">확인함</button>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+  <div style="background:#EDE8DE;border-radius:14px;padding:18px 20px;display:flex;flex-direction:column;gap:6px">
+    <div style="font-size:12px;color:#5F584F;letter-spacing:0.08em">AI 한 줄 요약</div>
+    <div style="font-size:16px;line-height:1.6;color:#2B2722">{{ det.summary }}</div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:4px;margin-top:12px">
+    <h2 style="margin:0 0 8px;font-family:'Gowun Batang',serif;font-size:20px;font-weight:700">이 글과 관련된 생각</h2>
+    <sc-for list="{{ det.related }}" as="r">
+      <div onClick="{{ r.open }}" style="padding:16px 0;border-top:1px solid #E3DDD1;cursor:pointer;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:#857D72"><span style="color:#2F5A4B;background:#E3EBE4;border-radius:4px;padding:2px 7px">{{ r.reason }}</span><span>{{ r.emoji }} {{ r.path }} · {{ r.date }}</span></div>
+        <div style="font-family:'Gowun Batang',serif;font-size:16.5px;line-height:1.5">{{ r.summary }}</div>
+      </div>
+    </sc-for>
+  </div>
+</article>
+</sc-if>
+
+<!-- 5. 흐름 -->
+<sc-if value="{{ onTimeline }}">
+<section data-screen-label="05 흐름" style="display:flex;flex-direction:column;gap:32px">
+  <h1 style="margin:0;font-family:'Gowun Batang',serif;font-size:34px;font-weight:700">흐름</h1>
+  <sc-if value="{{ noNotes }}"><div style="font-family:'Gowun Batang',serif;font-size:18px;line-height:1.7;color:#5F584F">아직 흐름이 없어요. 생각을 몇 개 남기면 날짜순 흐름과 한 달 돌아보기가 여기에 생겨요.</div></sc-if>
+  <sc-if value="{{ hasMonth }}">
+  <div style="background:#FBF9F5;border:1px solid #E3DDD1;border-radius:18px;padding:24px;display:flex;flex-direction:column;gap:22px">
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="font-size:12px;color:#857D72;letter-spacing:0.08em">{{ month.label }} 돌아보기</div>
+      <div style="font-family:'Gowun Batang',serif;font-size:22px;line-height:1.5;text-wrap:pretty">이번 달에는 <b>{{ month.topName }}</b>에 대해 가장 많이 생각했어요. 특히 <b>{{ month.topTag }}</b>이 {{ month.topTagCount }}번 등장했어요.</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="position:relative;height:clamp(300px,74vw,420px);margin:0 -6px">
+        <svg style="position:absolute;inset:0;width:100%;height:100%;overflow:visible">
+          <sc-for list="{{ net.edges }}" as="e"><line x1="{{ e.x1 }}" y1="{{ e.y1 }}" x2="{{ e.x2 }}" y2="{{ e.y2 }}" style="stroke:{{ e.color }};stroke-width:{{ e.w }};stroke-linecap:round"></line></sc-for>
+        </svg>
+        <sc-for list="{{ net.nodes }}" as="n">
+          <sc-if value="{{ n.isCat }}"><button onClick="{{ n.pick }}" aria-label="{{ n.label }}" style="position:absolute;left:{{ n.left }};top:{{ n.top }};width:{{ n.size }};height:{{ n.size }};transform:translate(-50%,-50%);border-radius:50%;border:none;background:{{ n.color }};color:#FBF9F5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;cursor:pointer;opacity:{{ n.op }};box-shadow:{{ n.ring }};font-family:'Gowun Batang',serif;font-size:14px;font-weight:700;padding:0;transition:opacity .2s">{{ n.label }}<span style="font-family:Pretendard,sans-serif;font-size:11px;font-weight:400;opacity:0.85">{{ n.count }}</span></button></sc-if>
+          <sc-if value="{{ n.isTag }}"><button onClick="{{ n.pick }}" style="position:absolute;left:{{ n.left }};top:{{ n.top }};transform:{{ n.tf }};border:none;background:none;display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;opacity:{{ n.op }};padding:0 4px;white-space:nowrap;transition:opacity .2s"><span style="width:{{ n.size }};height:{{ n.size }};border-radius:50%;background:{{ n.color }};display:block;box-shadow:{{ n.ring }}"></span><span style="font-size:12.5px;color:{{ n.text }};background:rgba(251,249,245,0.88);border-radius:4px;padding:0 3px">{{ n.label }}</span></button></sc-if>
+        </sc-for>
+      </div>
+      <sc-if value="{{ net.noSel }}"><div style="font-size:13px;color:#857D72;line-height:1.5">원은 분야, 점은 태그예요. 같은 태그를 가진 분야끼리 이어져요. 눌러서 이어진 생각을 보세요.</div></sc-if>
+      <sc-if value="{{ net.hasSel }}">
+        <div style="display:flex;flex-direction:column;border-top:1px solid #E3DDD1;padding-top:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+            <span style="font-size:14px;font-weight:600">{{ net.selLabel }} <span style="font-weight:400;color:#857D72">· 이번 달 {{ net.selCount }}편</span></span>
+            <button onClick="{{ net.clear }}" style="border:none;background:none;color:#857D72;font-size:13px;cursor:pointer;padding:6px 0">닫기</button>
+          </div>
+          <sc-for list="{{ net.selNotes }}" as="sn">
+            <div onClick="{{ sn.open }}" style="padding:12px 0;border-top:1px solid #EFEBE2;cursor:pointer;display:flex;gap:12px;align-items:baseline">
+              <span style="font-size:12.5px;color:#857D72;flex-shrink:0">{{ sn.shortDate }}</span>
+              <span style="font-family:'Gowun Batang',serif;font-size:15.5px;line-height:1.5">{{ sn.summary }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+    </div>
+    <div style="display:none">
+      <sc-for list="{{ month.bars }}" as="b">
+        <div style="display:grid;grid-template-columns:72px 1fr 32px;align-items:center;gap:12px;font-size:13.5px">
+          <span style="color:#5F584F">{{ b.emoji }} {{ b.name }}</span>
+          <span style="height:8px;background:#EDE8DE;border-radius:4px;overflow:hidden;display:block"><span style="display:block;height:100%;background:#2F5A4B;border-radius:4px;width:{{ b.pct }}"></span></span>
+          <span style="color:#857D72;text-align:right">{{ b.count }}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;border-top:1px solid #E3DDD1;padding-top:18px">
+      <div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12px;color:#857D72">이번 달 기록</span><span style="font-size:16px">{{ month.count }}편</span></div>
+      <div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12px;color:#857D72">새로 자란 갈래</span><span style="font-size:16px">{{ month.newSubs }}</span></div>
+    </div>
+  </div>
+  </sc-if>
+  <div style="display:flex;flex-direction:column">
+    <sc-for list="{{ groups }}" as="g" hint-placeholder-count="4">
+      <div style="display:grid;grid-template-columns:64px minmax(0,1fr);gap:16px">
+        <div style="padding-top:20px;display:flex;flex-direction:column;gap:2px"><span style="font-family:'Gowun Batang',serif;font-size:18px;font-weight:700">{{ g.day }}</span><span style="font-size:12px;color:#857D72">{{ g.dow }}</span></div>
+        <div style="border-left:1px solid #D9D2C4;padding-left:20px">
+          <sc-for list="{{ g.notes }}" as="n">
+            <div onClick="{{ n.open }}" style="padding:18px 0;border-bottom:1px solid #E3DDD1;cursor:pointer;display:flex;flex-direction:column;gap:5px">
+              <div style="font-size:12.5px;color:#857D72">{{ n.emoji }} {{ n.path }}</div>
+              <div style="font-family:'Gowun Batang',serif;font-size:17px;line-height:1.5">{{ n.summary }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+</sc-if>
+
+<!-- 6. 검색 -->
+<sc-if value="{{ onSearch }}">
+<section data-screen-label="06 검색" style="display:flex;flex-direction:column;gap:24px">
+  <h1 style="margin:0;font-family:'Gowun Batang',serif;font-size:34px;font-weight:700">검색</h1>
+  <div style="display:flex;gap:10px;align-items:center;border-bottom:1.5px solid #2B2722;padding-bottom:10px">
+    <input value="{{ query }}" onChange="{{ onQuery }}" onKeyDown="{{ onQueryKey }}" placeholder="키워드, 또는 “그때 ~에 대해 뭐라고 썼더라?”" style="flex:1;min-width:0;border:none;outline:none;background:transparent;font-size:18px;padding:8px 0;color:#2B2722;font-family:inherit">
+    <sc-if value="{{ isNL }}"><button onClick="{{ ask }}" style="border:none;background:#2F5A4B;color:#FBF9F5;border-radius:999px;padding:9px 16px;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap">물어보기</button></sc-if>
+  </div>
+
+  <sc-if value="{{ queryEmpty }}">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:12px;color:#857D72;letter-spacing:0.08em">이렇게 물어봐도 돼요</div>
+      <sc-for list="{{ examples }}" as="e">
+        <div onClick="{{ e.pick }}" style="font-family:'Gowun Batang',serif;font-size:16.5px;color:#5F584F;padding:12px 0;border-bottom:1px solid #E3DDD1;cursor:pointer" style-hover="color:#2B2722">{{ e.label }}</div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ aiLoading }}">
+    <div style="background:#FBF9F5;border:1px solid #E3DDD1;border-radius:14px;padding:18px 20px;font-size:15px;color:#5F584F">기록을 뒤적이는 중…</div>
+  </sc-if>
+  <sc-if value="{{ hasAnswer }}">
+    <div style="background:#FBF9F5;border:1px solid #E3DDD1;border-radius:16px;padding:22px;display:flex;flex-direction:column;gap:14px">
+      <div style="font-size:12px;color:#857D72;letter-spacing:0.08em">기록에서 찾은 답</div>
+      <div style="font-family:'Gowun Batang',serif;font-size:18px;line-height:1.7;text-wrap:pretty">{{ answerText }}</div>
+      <div style="display:flex;flex-direction:column">
+        <sc-for list="{{ answerNotes }}" as="n">
+          <div onClick="{{ n.open }}" style="padding:12px 0;border-top:1px solid #E3DDD1;cursor:pointer;display:flex;gap:12px;align-items:baseline">
+            <span style="font-size:12.5px;color:#857D72;flex-shrink:0">{{ n.shortDate }}</span>
+            <span style="font-size:14.5px;color:#2F5A4B;line-height:1.5">{{ n.summary }} →</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ hasQuery }}">
+    <div style="display:flex;flex-direction:column">
+      <div style="font-size:13px;color:#857D72;padding-bottom:4px">{{ resultLabel }}</div>
+      <sc-for list="{{ results }}" as="n">
+        <div onClick="{{ n.open }}" style="padding:18px 0;border-bottom:1px solid #E3DDD1;cursor:pointer;display:flex;flex-direction:column;gap:6px">
+          <div style="font-size:12.5px;color:#857D72">{{ n.date }} · {{ n.emoji }} {{ n.path }}</div>
+          <div style="font-family:'Gowun Batang',serif;font-size:17px;line-height:1.5">{{ n.summary }}</div>
+          <div style="font-size:14px;line-height:1.65;color:#5F584F;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ n.body }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+</section>
+</sc-if>
+
+</div>
+</main>
+
+<sc-if value="{{ showNav }}">
+<nav style="position:fixed;left:0;right:0;bottom:0;background:rgba(245,242,235,0.94);backdrop-filter:blur(12px);border-top:1px solid #E3DDD1;display:grid;grid-template-columns:repeat(4,1fr);padding:4px 8px calc(8px + env(safe-area-inset-bottom))">
+  <sc-for list="{{ navItems }}" as="it">
+    <sc-if value="{{ it.active }}"><button onClick="{{ it.go }}" style="border:none;background:none;min-height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;font-size:14px;font-weight:700;color:#2B2722;cursor:pointer">{{ it.label }}<span style="width:4px;height:4px;border-radius:50%;background:#2F5A4B"></span></button></sc-if>
+    <sc-if value="{{ it.inactive }}"><button onClick="{{ it.go }}" style="border:none;background:none;min-height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;font-size:14px;color:#857D72;cursor:pointer">{{ it.label }}<span style="width:4px;height:4px"></span></button></sc-if>
+  </sc-for>
+</nav>
+</sc-if>
+
+<sc-if value="{{ sheetOpen }}">
+<div data-screen-label="02 저장 피드백" style="position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;justify-content:flex-end;align-items:center">
+  <div onClick="{{ dismiss }}" style="position:absolute;inset:0;background:rgba(43,39,34,0.2)"></div>
+  <div onClick="{{ holdSheet }}" style="position:relative;width:100%;max-width:560px;background:#FBF9F5;border-radius:24px 24px 0 0;padding:12px 24px calc(28px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:16px;max-height:86vh;overflow-y:auto;box-shadow:0 -8px 30px rgba(43,39,34,0.08)">
+    <div style="width:40px;height:4px;border-radius:2px;background:#D6CFC1;align-self:center"></div>
+    <sc-if value="{{ isClassifying }}">
+      <div style="padding:20px 0 28px;display:flex;align-items:center;gap:10px;font-size:15px;color:#5F584F"><span style="width:8px;height:8px;border-radius:50%;background:#2F5A4B;opacity:0.6"></span>읽고 분류하는 중…</div>
+    </sc-if>
+    <sc-if value="{{ isDone }}">
+      <div style="font-size:13px;color:#5F584F">저장했어요 · 이렇게 정리했어요</div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div onClick="{{ toggleCat }}" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 16px;border:1px solid #E3DDD1;border-radius:12px;cursor:pointer">
+          <span style="font-size:17px;font-weight:600">{{ res.emoji }} {{ res.path }}</span>
+          <span style="font-size:13px;color:#2F5A4B;font-weight:600;flex-shrink:0">{{ catToggleLabel }}</span>
+        </div>
+        <sc-if value="{{ editing }}">
+          <div style="display:flex;flex-direction:column;gap:14px;border:1px solid #E3DDD1;border-radius:12px;padding:14px">
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="font-size:12px;color:#857D72;letter-spacing:0.06em">분야</div>
+              <div style="display:flex;flex-wrap:wrap;gap:6px">
+                <sc-for list="{{ ed.cats }}" as="o">
+                  <sc-if value="{{ o.active }}"><button onClick="{{ o.pick }}" style="border:1px solid #2F5A4B;background:#2F5A4B;color:#FBF9F5;border-radius:999px;padding:8px 12px;font-size:13px;cursor:pointer">{{ o.label }}</button></sc-if>
+                  <sc-if value="{{ o.inactive }}"><button onClick="{{ o.pick }}" style="border:1px solid #E3DDD1;background:transparent;color:#2B2722;border-radius:999px;padding:8px 12px;font-size:13px;cursor:pointer">{{ o.label }}</button></sc-if>
+                </sc-for>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="font-size:12px;color:#857D72;letter-spacing:0.06em">세부 갈래</div>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+                <sc-for list="{{ ed.subs }}" as="o">
+                  <sc-if value="{{ o.active }}"><button onClick="{{ o.pick }}" style="border:1px solid #2F5A4B;background:#2F5A4B;color:#FBF9F5;border-radius:999px;padding:8px 12px;font-size:13px;cursor:pointer">{{ o.label }}</button></sc-if>
+                  <sc-if value="{{ o.inactive }}"><button onClick="{{ o.pick }}" style="border:1px solid #E3DDD1;background:transparent;color:#2B2722;border-radius:999px;padding:8px 12px;font-size:13px;cursor:pointer">{{ o.label }}</button></sc-if>
+                </sc-for>
+                <input value="{{ ed.newSub }}" onChange="{{ ed.onNewSub }}" onKeyDown="{{ ed.onNewSubKey }}" placeholder="+ 새 갈래 이름" style="border:1px dashed #D6CFC1;border-radius:999px;background:transparent;outline:none;font-size:13px;padding:8px 12px;width:128px;color:#2B2722;font-family:inherit">
+                <sc-if value="{{ ed.canAdd }}"><button onClick="{{ ed.addSub }}" style="border:none;background:#2B2722;color:#FBF9F5;border-radius:999px;padding:8px 14px;font-size:13px;cursor:pointer">추가</button></sc-if>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ res.isNew }}">
+          <div style="font-size:13px;color:#2F5A4B;display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:#2F5A4B"></span>새 갈래가 자랐어요</div>
+        </sc-if>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <sc-for list="{{ res.tags }}" as="t">
+            <button onClick="{{ t.remove }}" style="border:none;background:#E3EBE4;color:#2F5A4B;border-radius:999px;padding:8px 10px 8px 12px;font-size:13px;cursor:pointer;display:flex;gap:6px">{{ t.t }} <span style="color:#5F584F">×</span></button>
+          </sc-for>
+          <input value="{{ newTag }}" onChange="{{ onNewTag }}" onKeyDown="{{ onNewTagKey }}" placeholder="+ 추가" style="border:1px dashed #D6CFC1;border-radius:999px;background:transparent;outline:none;font-size:13px;padding:8px 12px;width:96px;color:#2B2722;font-family:inherit">
+        </div>
+        <sc-if value="{{ res.hasBook }}"><div style="font-size:14px;color:#2B2722;line-height:1.5">📖 {{ res.bookTitle }} <span style="color:#5F584F">{{ res.bookMeta }}</span></div></sc-if>
+        <div style="font-family:'Gowun Batang',serif;font-size:15.5px;line-height:1.6;color:#5F584F">“{{ res.summary }}”</div>
+        <sc-if value="{{ resHasChecks }}"><div style="font-size:13px;color:#7A5A1E">확인할 내용 {{ resCheckCount }}개를 글에 함께 남겼어요.</div></sc-if>
+      </div>
+      <sc-if value="{{ res.hasRelated }}">
+        <div onClick="{{ res.openRelated }}" style="font-size:13px;color:#2F5A4B;display:flex;gap:8px;align-items:center;border-top:1px solid #E3DDD1;padding-top:14px;cursor:pointer;line-height:1.5"><span style="width:6px;height:6px;border-radius:50%;background:#2F5A4B;flex-shrink:0"></span>{{ res.relatedLine }}</div>
+      </sc-if>
+      <button onClick="{{ dismiss }}" style="border:none;background:#2B2722;color:#FBF9F5;border-radius:999px;padding:15px;font-size:15px;font-weight:600;cursor:pointer;min-height:50px">좋아요</button>
+    </sc-if>
+  </div>
+</div>
+</sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;startScreen&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;write&quot;,&quot;library&quot;,&quot;timeline&quot;,&quot;search&quot;],&quot;default&quot;:&quot;write&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;libraryView&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;shelf&quot;,&quot;card&quot;,&quot;tree&quot;],&quot;default&quot;:&quot;shelf&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;useAI&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;feedbackSeconds&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;min&quot;:3,&quot;max&quot;:30,&quot;default&quot;:9,&quot;tsType&quot;:&quot;number&quot;}}">
+const TODAY_S = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
+const STORE = 'saenggak-seojae-real-v1';
+function loadStore() { try { const j = JSON.parse(localStorage.getItem(STORE)); if (j && Array.isArray(j.cats) && Array.isArray(j.notes)) return { cats: j.cats, notes: j.notes, rev: j.rev || 0, backupRev: j.backupRev || 0 }; } catch (e) { } return {}; }
+const IDB = {
+  open() { return new Promise((res, rej) => { const r = indexedDB.open('saenggak-seojae', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+  async get(k) { const db = await this.open(); return new Promise(res => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => res(undefined); }); },
+  async set(k, v) { const db = await this.open(); return new Promise(res => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(true); t.onerror = () => res(false); }); },
+};
+const DOW = '일월화수목금토';
+const pd = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const daysAgo = s => Math.round((pd(TODAY_S) - pd(s)) / 864e5);
+const fmt = s => { const d = pd(s); return `${d.getMonth() + 1}월 ${d.getDate()}일 (${DOW[d.getDay()]})`; };
+const rel = s => { const n = daysAgo(s); return n <= 0 ? '오늘' : n === 1 ? '어제' : n < 7 ? `${n}일 전` : n < 30 ? `${Math.floor(n / 7)}주 전` : `${Math.floor(n / 30)}달 전`; };
+
+const CATS = [
+  { key: 'research', hue: 160, name: '연구', emoji: '📚', subs: [] },
+  { key: 'class', hue: 60, name: '수업', emoji: '✏️', subs: [] },
+  { key: 'reading', hue: 25, name: '독서', emoji: '📖', subs: [] },
+  { key: 'parent', hue: 125, name: '육아', emoji: '🌱', subs: [] },
+  { key: 'daily', hue: 290, name: '일상', emoji: '☕', subs: [] },
+  { key: 'exercise', hue: 225, name: '운동', emoji: '🏃', subs: [] },
+];
+
+const NOTES = [];
+
+const TAG_RULES = [[/달리|러닝|km|조깅/, '러닝'], [/스쿼트|근력|PT|헬스/, '근력운동'], [/부진/, '학습부진'], [/중재/, '중재연구'], [/사료|자료/, '사료'], [/연표|연대/, '연대기'], [/루브릭/, '루브릭'], [/서술형|채점/, '서술형평가'], [/도입/, '도입활동'], [/시간/, '시간개념'], [/말|단어|언어/, '언어발달'], [/인물/, '인물학습'], [/사고력|역사적 사고/, '역사적사고'], [/기초선/, '기초선'], [/질문|발문/, '발문'], [/모둠|협동/, '모둠활동'], [/잠|재우/, '잠자리'], [/책/, '책'], [/조선/, '조선'], [/고려/, '고려'], [/근대|개항/, '근대']];
+
+function fromHash() {
+  const h = typeof location !== 'undefined' ? decodeURIComponent(location.hash.slice(1)) : '';
+  if (!h) return {};
+  if (h === 'library-tree' || h === 'library-card' || h === 'library-shelf') return { screen: 'library', libView: h.slice(8) };
+  if (h.startsWith('detail-')) return { screen: 'detail', noteId: h.slice(7), stack: [{ screen: 'library' }] };
+  if (h.startsWith('feedback')) return { screen: 'write', phase: 'done', resId: 'n1', editing: h === 'feedback-edit' };
+  if (h.startsWith('category-')) return { screen: 'category', catKey: h.slice(9) };
+  return { screen: h };
+}
+
+class Component extends DCLogic {
+  state = {
+    w: typeof window !== 'undefined' ? window.innerWidth : 1200,
+    screen: this.props.startScreen ?? 'write', stack: [],
+    cats: CATS, notes: NOTES, draft: '', phase: 'idle', resId: null, resNew: false, editing: false, newTag: '',
+    libView: this.props.libraryView ?? 'shelf', shelfKey: null, catKey: null, subFilter: null, noteId: null,
+    query: '', answer: null, aiLoading: false, newSub: '', detailEditing: false, checks: null, checkStatus: 'idle', bodyEditing: false, bodyDraft: '', netSel: null,
+    rev: 0, backupRev: 0, fileName: null, fileErr: null, listening: false, interim: false, voiceErr: null,
+    fsaBlocked: (() => { if (typeof window.showSaveFilePicker !== 'function') return true; try { return window !== window.top && !window.top.location.origin; } catch (e) { return true; } })(),
+    ...loadStore(),
+  };
+  payload() { const s = this.state; return { app: '생각서재', version: 1, saved: new Date().toISOString(), cats: s.cats, notes: s.notes, rev: s.rev, backupRev: s.backupRev }; }
+  persist() {
+    const p = this.payload(); const str = JSON.stringify(p);
+    try { localStorage.setItem(STORE, str); } catch (e) { }
+    IDB.set('data', p).catch(() => { });
+    if (this.fileHandle) this.writeFile(str);
+  }
+  async writeFile(str) {
+    try {
+      const w = await this.fileHandle.createWritable(); await w.write(str); await w.close();
+      if (this.state.backupRev !== this.state.rev || this.state.fileErr) this.setState({ backupRev: this.state.rev, fileErr: null });
+    } catch (e) { this.setState({ fileErr: '기록 파일에 쓰지 못했어요. 파일을 다시 연결해 주세요.' }); }
+  }
+  async linkFile() {
+    if (this.state.fsaBlocked) { this.exportData(); return; }
+    try {
+      const h = await window.showSaveFilePicker({ suggestedName: '생각서재-기록.json', types: [{ description: '생각서재 기록', accept: { 'application/json': ['.json'] } }] });
+      this.fileHandle = h; IDB.set('handle', h).catch(() => { });
+      this.setState({ fileName: h.name, fileErr: null }, () => this.writeFile(JSON.stringify({ ...this.payload(), backupRev: this.state.rev })));
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+      this.setState({ fsaBlocked: true }); this.exportData();
+    }
+  }
+  async openFile() {
+    if (this.state.fsaBlocked) { this.fileIn && this.fileIn.click(); return; }
+    try {
+      const [h] = await window.showOpenFilePicker({ types: [{ description: '생각서재 기록', accept: { 'application/json': ['.json'] } }] });
+      const j = JSON.parse(await (await h.getFile()).text());
+      if (!Array.isArray(j.cats) || !Array.isArray(j.notes)) throw new Error('bad');
+      this.fileHandle = h; IDB.set('handle', h).catch(() => { });
+      this.setState({ cats: j.cats, notes: j.notes, rev: (j.rev || 0) + 1, backupRev: (j.rev || 0) + 1, fileName: h.name, fileErr: null, phase: 'idle' });
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+      if (e && e.message === 'bad') { alert('생각서재 기록 파일이 아니에요.'); return; }
+      this.setState({ fsaBlocked: true }); this.fileIn && this.fileIn.click();
+    }
+  }
+  async restoreLocal() {
+    try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) { }
+    try {
+      if (!this.state.notes.length) { const d = await IDB.get('data'); if (d && Array.isArray(d.notes) && d.notes.length) this.setState({ cats: d.cats, notes: d.notes, rev: d.rev || 0, backupRev: d.backupRev || 0 }); }
+      const h = await IDB.get('handle');
+      if (h && h.queryPermission && (await h.queryPermission({ mode: 'readwrite' })) === 'granted') { this.fileHandle = h; this.setState({ fileName: h.name }); }
+    } catch (e) { }
+  }
+
+  componentDidMount() {
+    this.restoreLocal();
+    this.onBeforeUnload = e => { if (this.state.notes.length && this.state.rev !== this.state.backupRev && !this.fileHandle) { e.preventDefault(); e.returnValue = ''; } };
+    window.addEventListener('beforeunload', this.onBeforeUnload);
+    this.onResize = () => this.setState({ w: window.innerWidth });
+    window.addEventListener('resize', this.onResize);
+    if (window === window.top) setTimeout(() => this.ta && this.state.screen === 'write' && this.ta.focus(), 80);
+  }
+  componentWillUnmount() { this.rec && this.rec.abort(); window.removeEventListener('resize', this.onResize); clearTimeout(this.timer); }
+  componentDidUpdate(pp, ps) {
+    if (ps && (ps.notes !== this.state.notes || ps.cats !== this.state.cats)) {
+      if (ps.rev === this.state.rev) { this.setState(s => ({ rev: s.rev + 1 })); return; }
+    }
+    if (ps && (ps.rev !== this.state.rev || ps.backupRev !== this.state.backupRev)) this.persist();
+    if (pp.libraryView !== this.props.libraryView && this.props.libraryView) this.setState({ libView: this.props.libraryView });
+    if (pp.startScreen !== this.props.startScreen && this.props.startScreen) this.go(this.props.startScreen);
+  }
+
+  go(screen) { this.setState({ screen, stack: [] }); window.scrollTo(0, 0); if (screen === 'write') setTimeout(() => this.ta && this.ta.focus(), 50); }
+  openNote(id) { this.setState(s => ({ stack: [...s.stack, { screen: s.screen, noteId: s.noteId }], screen: 'detail', noteId: id, detailEditing: false, newSub: '', bodyEditing: false })); window.scrollTo(0, 0); }
+  openCat(key, sub) { this.setState({ screen: 'category', catKey: key, subFilter: sub, stack: [] }); window.scrollTo(0, 0); }
+  back() { this.setState(s => { const st = [...s.stack]; const p = st.pop() || { screen: 'library' }; return { stack: st, screen: p.screen, noteId: p.noteId }; }); window.scrollTo(0, 0); }
+
+  catOf(key) { return this.state.cats.find(c => c.key === key) || this.state.cats[0]; }
+  vm(n) {
+    const c = this.catOf(n.cat); const d = pd(n.date);
+    const bk = n.book;
+    return { hasBook: !!bk, bookTitle: bk ? `『${bk.title}』` : '', bookMeta: bk ? this.bookMeta(bk) : '', bookLine: bk ? `『${bk.title}』${bk.author ? ' ' + bk.author : ''}` : '',
+      id: n.id, date: fmt(n.date), shortDate: `${d.getMonth() + 1}.${d.getDate()}`, rel: rel(n.date), emoji: c.emoji, path: `${c.name} › ${n.sub}`, sub: n.sub, summary: n.summary, body: n.body.replace(/\n/g, ' '), tags: n.tags.map(t => ({ t: '#' + t })), open: () => this.openNote(n.id) };
+  }
+  sorted() { return [...this.state.notes].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id)); }
+
+  heuristic(text) {
+    let cat = 'daily', sub = '생각';
+    if (/아이|딸|아들|육아|어린이집|서윤/.test(text)) { cat = 'parent'; sub = /잠|재우|밥|씻/.test(text) ? '잠·생활' : '말·언어'; }
+    else if (/달리|러닝|km|조깅|스쿼트|헬스|PT|근력|수영|운동|자전거|사이클|프레스|덤벨|바벨|트레드밀|걷기/.test(text)) { cat = 'exercise'; const cardio = /달리|러닝|km|조깅|자전거|사이클|수영|걷기|트레드밀|천국의계단|스텝퍼|유산소|로잉/.test(text), strength = /스쿼트|근력|프레스|데드|벤치|덤벨|바벨|PT|헬스|머신|컬|풀업/.test(text); sub = cardio && strength ? '근력+유산소' : cardio ? '유산소' : '근력'; }
+    else if (/논문|연구|중재|설계|측정|분석|세미나|선행/.test(text)) { cat = 'research'; sub = /논문|리뷰/.test(text) ? '논문 읽기' : /방법|설계|기초선|질적|양적/.test(text) ? '교육방법론' : '역사교육'; }
+    else if (/수업|학생|단원|평가|루브릭|차시|도입|반 /.test(text)) { cat = 'class'; sub = /평가|루브릭|채점|시험/.test(text) ? '평가' : '한국사 수업'; }
+    else if (/책|읽고|읽었|저자|밑줄/.test(text)) { cat = 'reading'; sub = /역사/.test(text) ? '역사' : '교육'; }
+    else if (/몸|목|허리|잠|피곤/.test(text)) { sub = '몸'; }
+    let tags = TAG_RULES.filter(([re]) => re.test(text)).map(([, t]) => t).slice(0, 3);
+    if (tags.length < 2) {
+      const words = text.replace(/[^\uAC00-\uD7A3a-zA-Z\s]/g, ' ').split(/\s+/).map(w => w.replace(/(에서|에게|으로|이나|하고|에는|이다|했다|한다|은|는|이|가|을|를|에|의|도|로|와|과)$/, '')).filter(w => w.length >= 2 && !tags.includes(w));
+      words.sort((a, b) => b.length - a.length);
+      tags = [...tags, ...words.slice(0, 2 - tags.length)];
+    }
+    const first = text.split(/[.\n!?]/)[0].trim();
+    const summary = first.length > 34 ? first.slice(0, 33) + '…' : first;
+    return { cat, sub, tags, summary };
+  }
+
+  async classify(text, book) {
+    if (book) text = `[이 글은 책 『${book.title}』${book.author ? `(${book.author})` : ''}에 관한 기록]\n` + text;
+    const useAI = this.props.useAI ?? true;
+    if (useAI && window.claude && window.claude.complete) {
+      try {
+        const tax = this.state.cats.map(c => `${c.key}(${c.name}): ${c.subs.map(s => s.name).join(', ')}`).join('\n');
+        const prompt = `너는 개인 생각 기록 앱의 분류기다. 사용자는 역사 교사이자 교육방법 전공 대학원생이고, 수업 아이디어·연구 메모·독서·육아·일상 글을 쓴다.\n기존 분류 체계:\n${tax}\n\n글:\n"""${text}"""\n\n기존 분야 key 중 하나를 고른다. 하위 갈래는 기존 것을 우선 쓰되, 정말 맞는 게 없으면 새 이름(2~6자)을 만든다. 한 글에 성격이 다른 내용이 섞이면(예: 근력운동과 유산소운동) 한쪽으로 몰지 말고 둘을 아우르는 갈래(예: 근력+유산소)를 고른다. 태그는 2~3개, 띄어쓰기 없는 명사. 요약은 30자 이내 한 줄, 명사형으로 끝낸다. JSON만 출력: {"cat":"","sub":"","tags":[],"summary":""}`;
+        const r = await Promise.race([window.claude.complete(prompt), new Promise((_, rej) => setTimeout(() => rej('timeout'), 15000))]);
+        const j = JSON.parse(String(r).match(/\{[\s\S]*\}/)[0]);
+        if (this.state.cats.find(c => c.key === j.cat) && j.sub && Array.isArray(j.tags) && j.summary) return { cat: j.cat, sub: String(j.sub), tags: j.tags.map(t => String(t).replace(/^#/, '').replace(/\s/g, '')).slice(0, 4), summary: String(j.summary) };
+      } catch (e) { }
+    }
+    await new Promise(r => setTimeout(r, 900));
+    const h = this.heuristic(text.replace(/^\[이 글은 책[^\n]*\n/, ''));
+    if (book && h.cat !== 'research' && h.cat !== 'class') { h.cat = 'reading'; h.sub = /역사/.test(text) ? '역사' : '교육'; }
+    return h;
+  }
+
+  save = async () => {
+    if (this.state.listening && this.rec) this.rec.stop();
+    const text = this.state.draft.trim();
+    if (!text || this.state.phase === 'classifying') return;
+    clearTimeout(this.timer);
+    const book = this.state.bookStatus === 'found' && !this.state.bookDismissed && this.state.book ? (({ key, ai, ...b }) => b)(this.state.book) : null;
+    clearTimeout(this.bookTimer); this.bookToken = null; this.lastKey = null;
+    const checks = this.state.checkStatus === 'done' && this.state.checks && this.state.checks.length ? this.state.checks : null;
+    this.checkToken = null;
+    this.setState({ phase: 'classifying', draft: '', editing: false, book: null, bookStatus: 'idle', bookDismissed: false, checks: null, checkStatus: 'idle' });
+    const r = await this.classify(text, book);
+    let cats = this.state.cats; const c = this.catOf(r.cat); let isNew = false;
+    if (!c.subs.find(s => s.name === r.sub)) { cats = cats.map(x => x.key === c.key ? { ...x, subs: [...x.subs, { name: r.sub, born: TODAY_S }] } : x); isNew = true; }
+    const id = 'n' + Date.now();
+    const note = { id, date: TODAY_S, cat: c.key, sub: r.sub, tags: r.tags, summary: r.summary, body: text, ...(book ? { book } : {}), ...(checks ? { checks } : {}) };
+    this.setState(s => ({ cats, notes: [note, ...s.notes], phase: 'done', resId: id, resNew: isNew }));
+    this.arm();
+  };
+  arm() { clearTimeout(this.timer); this.timer = setTimeout(() => { if (!this.state.editing) this.setState({ phase: 'idle' }); }, this.props.feedbackSeconds ? this.props.feedbackSeconds * 1000 : 4000); }
+  dismiss() { clearTimeout(this.timer); this.setState({ phase: 'idle', editing: false, newTag: '' }); if (this.state.screen === 'write') setTimeout(() => this.ta && this.ta.focus(), 30); }
+  relatedOf(dn) {
+    return this.state.notes.filter(n => n.id !== dn.id).map(n => {
+      const shared = n.tags.filter(t => dn.tags.includes(t)); const sameSub = n.cat === dn.cat && n.sub === dn.sub;
+      return { n, score: shared.length * 2 + (sameSub ? 1 : 0) };
+    }).filter(x => x.score > 0).sort((a, b) => b.score - a.score).map(x => x.n);
+  }
+  exportData() {
+    const blob = new Blob([JSON.stringify({ app: '생각서재', exported: new Date().toISOString(), cats: this.state.cats, notes: this.state.notes }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `생각서재-백업-${TODAY_S}.json`; document.body.appendChild(a); a.click(); a.remove();
+    this.setState({ backupRev: this.state.rev });
+  }
+  importData(e) {
+    const file = e.target.files && e.target.files[0]; if (!file) return;
+    const r = new FileReader();
+    r.onload = () => { try { const j = JSON.parse(r.result); if (!Array.isArray(j.cats) || !Array.isArray(j.notes)) throw 0; if (confirm(`글 ${j.notes.length}편을 불러올까요? 지금 기록은 대체됩니다.`)) this.setState(s => ({ cats: j.cats, notes: j.notes, phase: 'idle', rev: s.rev + 1, backupRev: s.rev + 1 })); } catch (x) { alert('백업 파일을 읽지 못했어요.'); } };
+    r.readAsText(file); e.target.value = '';
+  }
+  resetAll() { if (confirm('모든 기록을 지우고 처음부터 시작할까요? 되돌릴 수 없어요.')) this.setState({ cats: CATS, notes: [], phase: 'idle', screen: 'write', stack: [] }); }
+  onDraftChange(v) {
+    this.setState({ draft: v });
+    if (!v.trim()) { clearTimeout(this.bookTimer); this.bookToken = null; this.lastKey = null; this.checkToken = null; this.setState({ book: null, bookStatus: 'idle', bookDismissed: false, checks: null, checkStatus: 'idle' }); return; }
+    clearTimeout(this.bookTimer);
+    this.bookTimer = setTimeout(() => this.lookupBook(), 1200);
+  }
+  async lookupBook() {
+    const text = this.state.draft; const s = this.state;
+    if (s.bookDismissed || s.bookStatus === 'loading') return;
+    const br = text.match(/[『《「<]([^』》」>\n]{1,60})[』》」>]/);
+    const cand = br ? br[1].trim() : null;
+    if (!cand && !/책|읽|저자|작가|소설|에세이|완독|밑줄/.test(text)) return;
+    const key = cand || 'kw';
+    if (s.book && (cand ? s.book.key === key : true)) return;
+    if (!cand && this.lastKey === 'kw' && Math.abs(text.length - (this.lastLen || 0)) < 25) return;
+    this.lastKey = key; this.lastLen = text.length;
+    const useAI = (this.props.useAI ?? true) && window.claude && window.claude.complete;
+    if (!useAI) { if (cand) this.setState({ book: { key, title: cand }, bookStatus: 'found' }); return; }
+    const token = this.bookToken = Symbol();
+    this.setState({ bookStatus: 'loading' });
+    try {
+      const prompt = `다음 글에서 사용자가 읽고 있거나 언급한 책 한 권을 찾아 서지 정보를 알려줘.${cand ? ` 사용자가 표시한 제목: "${cand}".` : ''}\n글:\n"""${text.slice(0, 800)}"""\n\n특정 책이 없거나 실제 존재하는 책인지 확신할 수 없으면 {"book":null}. 한국어판이 있으면 한국어판 기준(번역자·출판사·출간연도). 원서 출간연도는 originalYear. JSON만 출력: {"book":{"title":"","author":"","translator":"","publisher":"","year":"","originalYear":""}}`;
+      const r = await Promise.race([window.claude.complete(prompt), new Promise((_, rej) => setTimeout(() => rej('timeout'), 15000))]);
+      if (this.bookToken !== token) return;
+      const j = JSON.parse(String(r).match(/\{[\s\S]*\}/)[0]);
+      if (j.book && j.book.title) { const b = {}; ['title', 'author', 'translator', 'publisher', 'year', 'originalYear'].forEach(k => { if (j.book[k]) b[k] = String(j.book[k]); }); this.setState({ book: { ...b, key, ai: true }, bookStatus: 'found' }); }
+      else this.setState({ bookStatus: cand ? 'found' : 'idle', book: cand ? { key, title: cand } : null });
+    } catch (e) { if (this.bookToken === token) this.setState({ bookStatus: cand ? 'found' : 'idle', book: cand ? { key, title: cand } : null }); }
+  }
+  bookMeta(b) { return [b.author, b.translator && `${b.translator} 옮김`, b.publisher, b.year && (b.originalYear && b.originalYear !== b.year ? `${b.year} (원서 ${b.originalYear})` : b.year)].filter(Boolean).join(' · '); }
+  toggleVoice() {
+    if (this.state.listening) { this.rec && this.rec.stop(); return; }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { this.setState({ voiceErr: '이 브라우저는 음성 입력을 지원하지 않아요. 키보드의 마이크 버튼을 써 주세요.' }); return; }
+    const rec = this.rec = new SR(); rec.lang = 'ko-KR'; rec.continuous = true; rec.interimResults = true;
+    const base = this.state.draft; let finalText = '';
+    rec.onresult = e => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) finalText += t; else interim += t; }
+      const sep = base && !/\s$/.test(base) ? ' ' : '';
+      this.onDraftChange(base + sep + finalText + interim);
+      this.setState({ interim: !!interim });
+    };
+    rec.onerror = e => this.setState({ listening: false, voiceErr: e.error === 'not-allowed' || e.error === 'service-not-allowed' ? '마이크 권한이 필요해요. 브라우저 설정에서 허용해 주세요.' : e.error === 'no-speech' ? null : '음성을 인식하지 못했어요. 다시 시도해 주세요.' });
+    rec.onend = () => this.setState({ listening: false, interim: false });
+    try { rec.start(); this.setState({ listening: true, voiceErr: null }); } catch (e) { this.setState({ voiceErr: '음성 입력을 시작하지 못했어요.' }); }
+  }
+  async runCheck() {
+    const text = this.state.draft.trim(); if (!text || this.state.checkStatus === 'loading') return;
+    if (!((this.props.useAI ?? true) && window.claude && window.claude.complete)) { this.setState({ checkStatus: 'unavailable', checks: [] }); return; }
+    const token = this.checkToken = Symbol();
+    this.setState({ checkStatus: 'loading', checks: null });
+    try {
+      const prompt = `너는 역사 교사이자 교육방법 전공 대학원생의 개인 메모를 읽는 꼼꼼한 검토자다. 아래 글에서 사실관계를 확인해 볼 필요가 있는 부분(연도·인물·사건·수치·인용문·연구 결과·학자 이름·책 정보 등)을 찾아라. 개인 경험·감정·의견·계획은 검토 대상이 아니다. 틀렸다고 확신할 때만 level을 "오류 가능"으로, 나머지는 "확인 권장"으로 한다. 사소한 것은 빼고 최대 5개. 없으면 빈 배열.\n글:\n"""${text.slice(0, 3000)}"""\n\nJSON만 출력: {"checks":[{"quote":"글에서 해당 부분을 그대로 30자 이내로","level":"오류 가능 또는 확인 권장","issue":"무엇을 확인해야 하는지 한 문장","note":"알고 있는 사실이나 확인할 방법 한 문장"}]}`;
+      const r = await Promise.race([window.claude.complete(prompt), new Promise((_, rej) => setTimeout(() => rej('timeout'), 20000))]);
+      if (this.checkToken !== token) return;
+      const j = JSON.parse(String(r).match(/\{[\s\S]*\}/)[0]);
+      const checks = (j.checks || []).filter(c => c && c.issue).slice(0, 5).map(c => ({ quote: String(c.quote || ''), level: c.level === '오류 가능' ? '오류 가능' : '확인 권장', issue: String(c.issue), note: String(c.note || '') }));
+      this.setState({ checkStatus: 'done', checks });
+    } catch (e) { if (this.checkToken === token) this.setState({ checkStatus: 'error', checks: [] }); }
+  }
+  checkVm(list, onRemove) {
+    return (list || []).map((c, i) => ({ ...c, hasQuote: !!c.quote, hasNote: !!c.note, isErr: c.level === '오류 가능', isRec: c.level !== '오류 가능', remove: () => onRemove(i) }));
+  }
+  saveBody(id) {
+    const body = this.state.bodyDraft.trim(); if (!body) return;
+    this.setState(s => ({ notes: s.notes.map(n => n.id === id ? { ...n, body, ...(body !== n.body ? { edited: TODAY_S } : {}) } : n), bodyEditing: false }));
+  }
+  deleteNote(id) {
+    if (!confirm('이 글을 삭제할까요? 되돌릴 수 없어요.')) return;
+    this.setState(s => {
+      const note = s.notes.find(n => n.id === id); if (!note) return null;
+      const notes = s.notes.filter(n => n.id !== id);
+      const cats = s.cats.map(c => c.key === note.cat ? { ...c, subs: c.subs.filter(x => x.name !== note.sub || notes.some(n => n.cat === c.key && n.sub === x.name)) } : c);
+      return { notes, cats, bodyEditing: false };
+    }, () => this.back());
+  }
+  layoutNet(mNotes) {
+    const key = mNotes.map(n => n.id + n.cat + n.tags.join(',')).join('|');
+    if (this._netKey === key) return this._net;
+    const catCount = {}, tagCount = {}, link = {};
+    mNotes.forEach(n => { catCount[n.cat] = (catCount[n.cat] || 0) + 1; n.tags.forEach(t => { tagCount[t] = (tagCount[t] || 0) + 1; const k = n.cat + '\u0001' + t; link[k] = (link[k] || 0) + 1; }); });
+    const tags = Object.entries(tagCount).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).filter(([, c], i) => c >= 2 || i < 6).slice(0, 10).map(x => x[0]);
+    const cats = Object.keys(catCount);
+    const nodes = [...cats.map((k, i) => { const a = i / cats.length * Math.PI * 2 - Math.PI / 2; return { id: 'c:' + k, type: 'cat', key: k, count: catCount[k], x: 0.5 + (cats.length > 1 ? 0.28 : 0) * Math.cos(a), y: 0.5 + (cats.length > 1 ? 0.28 : 0) * Math.sin(a) }; }),
+      ...tags.map(t => ({ id: 't:' + t, type: 'tag', key: t, count: tagCount[t], x: 0.5, y: 0.5 }))];
+    const idx = {}; nodes.forEach((n, i) => idx[n.id] = i);
+    const edges = []; Object.entries(link).forEach(([k, w]) => { const [c, t] = k.split('\u0001'); if (idx['t:' + t] !== undefined) edges.push({ a: idx['c:' + c], b: idx['t:' + t], w }); });
+    nodes.forEach((n, i) => {
+      if (n.type !== 'tag') return;
+      const ls = edges.filter(e => e.b === i).map(e => nodes[e.a]);
+      let h = 7; for (const ch of n.key) h = (h * 31 + ch.charCodeAt(0)) % 997;
+      const ang = h / 997 * Math.PI * 2;
+      n.x = ls.reduce((s, m) => s + m.x, 0) / ls.length + Math.cos(ang) * 0.12;
+      n.y = ls.reduce((s, m) => s + m.y, 0) / ls.length + Math.sin(ang) * 0.12;
+    });
+    const N = 320;
+    for (let it = 0; it < N; it++) {
+      const cool = 1 - it / N, fx = nodes.map(() => 0), fy = nodes.map(() => 0);
+      for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+        const dx = nodes[i].x - nodes[j].x, dy = nodes[i].y - nodes[j].y, d2 = dx * dx + dy * dy + 1e-4, d = Math.sqrt(d2);
+        const k = nodes[i].type === 'cat' && nodes[j].type === 'cat' ? 0.010 : nodes[i].type === 'cat' || nodes[j].type === 'cat' ? 0.004 : 0.0025;
+        const f = k / d2; fx[i] += dx / d * f; fy[i] += dy / d * f; fx[j] -= dx / d * f; fy[j] -= dy / d * f;
+      }
+      edges.forEach(e => { const A = nodes[e.a], B = nodes[e.b], dx = B.x - A.x, dy = B.y - A.y, d = Math.sqrt(dx * dx + dy * dy) + 1e-6, f = (d - 0.2) * 0.12; fx[e.a] += dx / d * f; fy[e.a] += dy / d * f; fx[e.b] -= dx / d * f; fy[e.b] -= dy / d * f; });
+      nodes.forEach((n, i) => {
+        fx[i] += (0.5 - n.x) * 0.02; fy[i] += (0.5 - n.y) * 0.02;
+        const lim = 0.03 * cool + 0.002;
+        n.x = Math.min(0.86, Math.max(0.14, n.x + Math.max(-lim, Math.min(lim, fx[i]))));
+        n.y = Math.min(0.85, Math.max(0.13, n.y + Math.max(-lim, Math.min(lim, fy[i]))));
+      });
+    }
+    this._netKey = key; this._net = { nodes, edges };
+    return this._net;
+  }
+  netVm(mNotes) {
+    const { nodes, edges } = this.layoutNet(mNotes);
+    const sel = this.state.netSel; const selIdx = nodes.findIndex(n => n.id === sel);
+    const near = new Set(); if (selIdx >= 0) { near.add(selIdx); edges.forEach(e => { if (e.a === selIdx) near.add(e.b); if (e.b === selIdx) near.add(e.a); }); }
+    const maxC = Math.max(1, ...nodes.filter(n => n.type === 'cat').map(n => n.count));
+    const maxT = Math.max(1, ...nodes.filter(n => n.type === 'tag').map(n => n.count));
+    const maxW = Math.max(1, ...edges.map(e => e.w));
+    const pct = v => (v * 100).toFixed(2) + '%';
+    const vNodes = nodes.map((n, i) => {
+      const on = selIdx < 0 || near.has(i), isSel = i === selIdx;
+      if (n.type === 'cat') { const c = this.catOf(n.key); const sz = Math.round(48 + 30 * n.count / maxC);
+        return { isCat: true, isTag: false, label: c.name, count: n.count, left: pct(n.x), top: pct(n.y), size: sz + 'px', color: `oklch(0.42 0.06 ${c.hue ?? 160})`, op: on ? 1 : 0.28, ring: isSel ? '0 0 0 3px #F5F2EB, 0 0 0 5px #2B2722' : 'none', pick: () => this.setState({ netSel: isSel ? null : n.id }) }; }
+      const sz = Math.round(8 + 8 * n.count / maxT);
+      return { isCat: false, isTag: true, label: '#' + n.key, count: n.count, left: pct(n.x), top: pct(n.y), size: sz + 'px', tf: `translate(-50%,-${sz / 2}px)`, color: isSel ? '#2B2722' : '#2F5A4B', text: on ? '#2B2722' : '#857D72', op: on ? 1 : 0.35, ring: isSel ? '0 0 0 3px #E3EBE4' : 'none', pick: () => this.setState({ netSel: isSel ? null : n.id }) };
+    });
+    const vEdges = edges.map(e => { const on = selIdx >= 0 && (e.a === selIdx || e.b === selIdx); const A = nodes[e.a], B = nodes[e.b];
+      return { x1: pct(A.x), y1: pct(A.y), x2: pct(B.x), y2: pct(B.y), w: (1 + 2 * e.w / maxW) + (on ? 0.5 : 0), color: on ? '#2F5A4B' : selIdx >= 0 ? '#E6E1D7' : '#CFC7B8' }; });
+    let selLabel = '', selNotes = [];
+    if (selIdx >= 0) { const n = nodes[selIdx];
+      if (n.type === 'cat') { const c = this.catOf(n.key); selLabel = `${c.emoji} ${c.name}`; selNotes = mNotes.filter(x => x.cat === n.key); }
+      else { selLabel = '#' + n.key; selNotes = mNotes.filter(x => x.tags.includes(n.key)); } }
+    selNotes = [...selNotes].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+    return { nodes: vNodes, edges: vEdges, hasSel: selIdx >= 0, noSel: selIdx < 0, selLabel, selCount: selNotes.length, selNotes: selNotes.map(n => this.vm(n)), clear: () => this.setState({ netSel: null }) };
+  }
+  setCatSub(id, cat, sub) {
+    sub = String(sub).trim().replace(/^[›>#]\s*/, ''); if (!sub) return;
+    this.setState(s => {
+      const note = s.notes.find(n => n.id === id); if (!note) return null;
+      const notes = s.notes.map(n => n.id === id ? { ...n, cat, sub } : n);
+      let cats = s.cats.map(c => c.key === cat && !c.subs.find(x => x.name === sub) ? { ...c, subs: [...c.subs, { name: sub, born: TODAY_S }] } : c);
+      if (note.cat !== cat || note.sub !== sub) cats = cats.map(c => c.key === note.cat ? { ...c, subs: c.subs.filter(x => x.name !== note.sub || notes.some(n => n.cat === c.key && n.sub === x.name)) } : c);
+      return { notes, cats, resNew: false };
+    });
+  }
+  addSub(note) { const v = this.state.newSub.trim(); if (!v) return; this.setCatSub(note.id, note.cat, v); this.setState({ newSub: '' }); }
+  editorFor(note) {
+    const s = this.state;
+    return {
+      cats: s.cats.map(c => ({ label: `${c.emoji} ${c.name}`, active: c.key === note.cat, inactive: c.key !== note.cat, pick: () => { if (c.key !== note.cat) this.setCatSub(note.id, c.key, c.subs[0] ? c.subs[0].name : '일반'); } })),
+      subs: this.catOf(note.cat).subs.map(sb => ({ label: sb.name, active: sb.name === note.sub, inactive: sb.name !== note.sub, pick: () => this.setCatSub(note.id, note.cat, sb.name) })),
+      newSub: s.newSub, onNewSub: e => this.setState({ newSub: e.target.value }),
+      onNewSubKey: e => { if (e.key === 'Enter') { e.preventDefault(); this.addSub(note); } },
+      addSub: () => this.addSub(note), canAdd: !!s.newSub.trim(),
+    };
+  }
+  patch(id, p) { this.setState(s => ({ notes: s.notes.map(n => n.id === id ? { ...n, ...p } : n) })); }
+
+  async ask() {
+    const q = this.state.query.trim(); if (!q) return;
+    this.setState({ aiLoading: true, answer: null });
+    const notes = this.sorted();
+    if ((this.props.useAI ?? true) && window.claude && window.claude.complete) {
+      try {
+        const ctx = notes.map(n => `[${n.id}] ${n.date} | ${this.catOf(n.cat).name}›${n.sub} | ${n.summary} | ${n.body.slice(0, 180)}`).join('\n');
+        const prompt = `아래는 한 사람의 생각 기록이다.\n${ctx}\n\n질문: "${q}"\n\n기록에 근거해 2~3문장으로, 본인에게 말하듯 존댓말로 답한다. 날짜를 '11월 10일'처럼 언급한다. 관련 기록 id를 최대 3개. JSON만 출력: {"answer":"","ids":[]}`;
+        const r = await Promise.race([window.claude.complete(prompt), new Promise((_, rej) => setTimeout(() => rej('timeout'), 15000))]);
+        const j = JSON.parse(String(r).match(/\{[\s\S]*\}/)[0]);
+        if (j.answer) { this.setState({ aiLoading: false, answer: { text: j.answer, ids: (j.ids || []).filter(id => notes.find(n => n.id === id)) } }); return; }
+      } catch (e) { }
+    }
+    await new Promise(r => setTimeout(r, 700));
+    const hits = this.nlScore(q).slice(0, 3);
+    const text = hits.length ? `${fmt(hits[0].date).replace(/ \(.\)/, '')}에 “${hits[0].summary}”라고 남겼어요.${hits[1] ? ` 비슷한 생각은 ${fmt(hits[1].date).replace(/ \(.\)/, '')}에도 있었어요.` : ''}` : '관련된 기록을 찾지 못했어요.';
+    this.setState({ aiLoading: false, answer: { text, ids: hits.map(n => n.id) } });
+  }
+  tokens(q) { return q.replace(/[?？“”"']/g, ' ').split(/\s+/).map(w => w.replace(/(에 대해|에대해|에서|이라고|라고|했었|했지|썼더라|썼지|더라|에는|은|는|이|가|을|를|에|의|도|로)$/, '')).filter(w => w.length >= 2 && !/그때|뭐라고|언제|어떻게|썼더라|얘기|대해|관해|무엇|뭐라/.test(w)); }
+  nlScore(q) {
+    const toks = this.tokens(q);
+    return this.sorted().map(n => { const hay = [n.body, n.summary, n.tags.join(' '), n.sub, this.catOf(n.cat).name].join(' '); let s = 0; toks.forEach(t => { if (hay.includes(t)) s += 2; else if (t.length >= 3 && hay.includes(t.slice(0, 2))) s += 1; }); return { n, s }; }).filter(x => x.s > 0).sort((a, b) => b.s - a.s).map(x => x.n);
+  }
+
+  renderVals() {
+    const s = this.state; const wide = s.w >= 900;
+    const vm = n => this.vm(n); const sorted = this.sorted();
+    const navActive = s.screen === 'detail' ? (s.stack[0] ? s.stack[0].screen : 'library') : s.screen === 'category' ? 'library' : s.screen;
+    const navItems = [['write', '기록'], ['library', '서재'], ['timeline', '흐름'], ['search', '검색']].map(([k, l]) => ({ label: l, active: navActive === k, inactive: navActive !== k, go: () => this.go(k) }));
+
+    const libCats = s.cats.map(c => {
+      const ns = sorted.filter(n => n.cat === c.key);
+      return { key: c.key, emoji: c.emoji, name: c.name, count: ns.length, countLabel: `${ns.length}편`, last: ns[0] ? rel(ns[0].date) : '—', lastDate: ns[0] ? ns[0].date : '', latest: ns[0] ? ns[0].summary : '',
+        subs: c.subs.map(sb => { const k = ns.filter(n => n.sub === sb.name).length; return { name: sb.name, count: k, isNew: daysAgo(sb.born) <= 14, open: e => { e && e.stopPropagation(); this.openCat(c.key, sb.name); } }; }),
+        open: () => this.openCat(c.key, null) };
+    }).sort((a, b) => b.lastDate.localeCompare(a.lastDate));
+
+    const maxC = Math.max(1, ...libCats.map(c => c.count));
+    const openKey = s.shelfKey || (libCats[0] && libCats[0].key);
+    const oc = libCats.find(c => c.key === openKey) || libCats[0];
+    const ocLatest = sorted.find(n => n.cat === oc.key);
+    const shelf = {
+      books: libCats.map(c => { const hue = this.catOf(c.key).hue; return { name: c.name, count: c.count, active: c.key === openKey, inactive: c.key !== openKey, w: (38 + Math.round(c.count / maxC * 20)) + 'px', h: (130 + Math.round(c.count / maxC * 120)) + 'px', color: `oklch(0.42 0.06 ${hue})`, pick: () => this.setState({ shelfKey: c.key }) }; }),
+      open: { emoji: oc.emoji, name: oc.name, count: oc.count, last: oc.last, latest: oc.latest, hasLatest: !!oc.latest, noChapters: oc.subs.length === 0, openAll: oc.open, latestOpen: () => ocLatest && this.openNote(ocLatest.id),
+        chapters: oc.subs.map((sb, i) => ({ no: (i + 1) + '장', name: sb.name, count: sb.count, isNew: sb.isNew, open: sb.open })) },
+    };
+    const resNote = s.notes.find(n => n.id === s.resId);
+    let res = { emoji: '', path: '', tags: [], summary: '', isNew: false }, catOptions = [];
+    if (resNote) {
+      const c = this.catOf(resNote.cat);
+      res = { emoji: c.emoji, path: `${c.name} › ${resNote.sub}`, summary: resNote.summary, isNew: s.resNew,
+        hasBook: !!resNote.book, bookTitle: resNote.book ? `『${resNote.book.title}』` : '', bookMeta: resNote.book ? this.bookMeta(resNote.book) : '',
+        tags: resNote.tags.map(t => ({ t: '#' + t, remove: () => this.patch(resNote.id, { tags: resNote.tags.filter(x => x !== t) }) })) };
+      const rel3 = this.relatedOf(resNote).slice(0, 3);
+      res.hasRelated = rel3.length > 0;
+      res.relatedLine = rel3.length ? `관련된 생각 ${rel3.length}개 — 「${rel3[0].summary}」${rel3.length > 1 ? ' 외' : ''}` : '';
+      res.openRelated = () => { if (rel3[0]) { this.dismiss(); this.openNote(rel3[0].id); } };
+
+    }
+
+    let catView = { emoji: '', name: '', countLabel: '', last: '', chips: [], notes: [] };
+    if (s.screen === 'category') {
+      const c = this.catOf(s.catKey); const all = sorted.filter(n => n.cat === c.key);
+      const list = s.subFilter ? all.filter(n => n.sub === s.subFilter) : all;
+      catView = { emoji: c.emoji, name: c.name, countLabel: `${all.length}편`, last: all[0] ? rel(all[0].date) : '—',
+        chips: [{ name: null, label: `전체 ${all.length}` }, ...c.subs.map(sb => ({ name: sb.name, label: `${sb.name} ${all.filter(n => n.sub === sb.name).length}` }))].map(o => ({ label: o.label, active: s.subFilter === o.name, inactive: s.subFilter !== o.name, pick: () => this.setState({ subFilter: o.name }) })),
+        notes: list.map(vm) };
+    }
+
+    let det = { emoji: '', path: '', date: '', tags: [], paras: [], summary: '', related: [] }, backLabel = '서재';
+    const dn = s.notes.find(n => n.id === s.noteId);
+    if (s.screen === 'detail' && dn) {
+      const related = s.notes.filter(n => n.id !== dn.id).map(n => {
+        const shared = n.tags.filter(t => dn.tags.includes(t)); const sameSub = n.cat === dn.cat && n.sub === dn.sub;
+        return { n, score: shared.length * 2 + (sameSub ? 1 : 0), reason: shared.length ? `같은 태그 #${shared[0]}` : `같은 갈래 · ${n.sub}` };
+      }).filter(x => x.score > 0).sort((a, b) => b.score - a.score).slice(0, 4).map(x => ({ ...vm(x.n), reason: x.reason }));
+      det = { ...vm(dn), paras: dn.body.split('\n').filter(Boolean).map(p => ({ p })), related };
+      const prev = s.stack[s.stack.length - 1];
+      backLabel = prev ? ({ write: '기록', library: '서재', category: this.catOf(s.catKey).name, timeline: '흐름', search: '검색', detail: '이전 글' })[prev.screen] : '서재';
+    }
+
+    const mNotes = s.notes.filter(n => n.date.startsWith(TODAY_S.slice(0, 7)));
+    const byCat = s.cats.map(c => ({ c, count: mNotes.filter(n => n.cat === c.key).length })).filter(x => x.count).sort((a, b) => b.count - a.count);
+    const max = byCat[0] ? byCat[0].count : 1;
+    const tagCount = {}; mNotes.forEach(n => n.tags.forEach(t => tagCount[t] = (tagCount[t] || 0) + 1));
+    const topTag = Object.entries(tagCount).sort((a, b) => b[1] - a[1])[0] || ['', 0];
+    const newSubs = []; s.cats.forEach(c => c.subs.forEach(sb => { if (sb.born.startsWith(TODAY_S.slice(0, 7))) newSubs.push(`${c.name} › ${sb.name}`); }));
+    const month = { label: `${pd(TODAY_S).getMonth() + 1}월`, count: mNotes.length, topName: byCat[0] ? byCat[0].c.name : '—', topTag: '#' + topTag[0], topTagCount: topTag[1],
+      newSubs: newSubs.join(', ') || '없음', bars: byCat.map(x => ({ emoji: x.c.emoji, name: x.c.name, count: x.count, pct: Math.round(x.count / max * 100) + '%' })) };
+    const groups = []; sorted.forEach(n => { let g = groups[groups.length - 1]; if (!g || g.date !== n.date) { const d = pd(n.date); g = { date: n.date, day: `${d.getMonth() + 1}.${d.getDate()}`, dow: DOW[d.getDay()] + '요일', notes: [] }; groups.push(g); } g.notes.push(vm(n)); });
+
+    const q = s.query.trim(); const isNL = /더라|했었|썼지|언제|뭐라|어떻게|\?|？|있었/.test(q);
+    let results = [];
+    if (q) { const k = q.replace(/^#/, ''); results = isNL ? this.nlScore(q) : sorted.filter(n => [n.body, n.summary, n.tags.join(' '), n.sub, this.catOf(n.cat).name].join(' ').includes(k)); }
+
+    const draftLen = s.draft.trim().length;
+    return {
+      isWide: wide, isNarrow: !wide, navItems, todayLabel: fmt(TODAY_S).replace(/\((.)\)/, '$1요일'),
+      onWrite: s.screen === 'write', onLibrary: s.screen === 'library', onCategory: s.screen === 'category', onDetail: s.screen === 'detail', onTimeline: s.screen === 'timeline', onSearch: s.screen === 'search',
+      taRef: el => { this.ta = el; }, draft: s.draft,
+      onDraft: e => this.onDraftChange(e.target.value),
+      net: this.netVm(mNotes),
+      bodyEditing: s.bodyEditing, notBodyEditing: !s.bodyEditing, bodyDraft: s.bodyDraft,
+      startBodyEdit: () => dn && this.setState({ bodyEditing: true, bodyDraft: dn.body }),
+      cancelBodyEdit: () => this.setState({ bodyEditing: false }),
+      onBodyDraft: e => this.setState({ bodyDraft: e.target.value }),
+      onBodyKey: e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && dn) { e.preventDefault(); this.saveBody(dn.id); } },
+      saveBody: () => dn && this.saveBody(dn.id), canSaveBody: !!s.bodyDraft.trim(),
+      deleteNote: () => dn && this.deleteNote(dn.id),
+      detEditedLabel: dn && dn.edited ? `${rel(dn.edited)} 수정` : '', detWasEdited: !!(dn && dn.edited),
+      runCheck: () => this.runCheck(), checkLabel: s.checkStatus === 'loading' ? '검토 중…' : 'AI 검토',
+      checkLoading: s.checkStatus === 'loading', checkDone: s.checkStatus === 'done' && !!s.checks && s.checks.length > 0,
+      checkEmpty: s.checkStatus === 'done' && !!s.checks && s.checks.length === 0,
+      checkFail: s.checkStatus === 'unavailable' || s.checkStatus === 'error',
+      checkFailMsg: s.checkStatus === 'unavailable' ? 'AI 검토는 AI가 연결된 환경에서만 쓸 수 있어요.' : '검토하지 못했어요. 잠시 후 다시 시도해 주세요.',
+      checkCount: (s.checks || []).length, closeCheck: () => { this.checkToken = null; this.setState({ checkStatus: 'idle', checks: null }); },
+      checkItems: this.checkVm(s.checks, i => this.setState(st => ({ checks: st.checks.filter((_, k) => k !== i) }))),
+      detChecks: dn ? this.checkVm(dn.checks, i => this.patch(dn.id, { checks: dn.checks.filter((_, k) => k !== i) })) : [],
+      hasDetChecks: !!(dn && dn.checks && dn.checks.length), resHasChecks: !!(resNote && resNote.checks && resNote.checks.length), resCheckCount: resNote && resNote.checks ? resNote.checks.length : 0,
+      ed: resNote ? this.editorFor(resNote) : {}, detEd: dn ? this.editorFor(dn) : {},
+      detEditing: s.detailEditing, detEditLabel: s.detailEditing ? '닫기' : '분류 수정',
+      toggleDetEdit: () => this.setState(st => ({ detailEditing: !st.detailEditing, newSub: '' })),
+      bookLoading: s.bookStatus === 'loading' && !s.bookDismissed, bookFound: s.bookStatus === 'found' && !!s.book && !s.bookDismissed,
+      draftBook: s.book ? { title: s.book.title, meta: this.bookMeta(s.book), hasMeta: !!this.bookMeta(s.book), note: s.book.ai ? 'AI가 찾은 정보예요. 다르면 지워주세요.' : '책 정보는 AI 연결 시 자동으로 채워져요.' } : { title: '', meta: '', hasMeta: false, note: '' },
+      dismissBook: () => { this.bookToken = null; this.setState({ bookDismissed: true }); },
+      onDraftKey: e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this.save(); } },
+      save: this.save, canSave: draftLen > 0 && s.phase !== 'classifying', cantSave: !(draftLen > 0 && s.phase !== 'classifying'),
+      linkFile: () => this.linkFile(), openFile: () => this.openFile(),
+      showMic: !wide || (this.props.voiceOnDesktop ?? false), toggleVoice: () => this.toggleVoice(),
+      listening: s.listening, notListening: !s.listening, voiceErr: s.voiceErr, hasVoiceErr: !!s.voiceErr && !s.listening,
+      closeVoiceErr: () => this.setState({ voiceErr: null }),
+      showRestore: draftLen === 0 && s.notes.length === 0 && !s.fileName,
+      fileLinked: !!s.fileName && !s.fileErr, fileLinkLabel: s.fileName ? `‘${s.fileName}’에 자동 저장 중` : '',
+      fileErr: s.fileErr, hasFileErr: !!s.fileErr,
+      showUnbacked: draftLen === 0 && s.notes.length > 0 && !s.fileName && s.rev !== s.backupRev,
+      unbackedLabel: s.fsaBlocked ? '아직 파일로 백업하지 않은 기록이 있어요. 이 환경은 접속이 끊기면 기록이 지워질 수 있어요.' : '이 환경은 접속이 끊기면 기록이 지워질 수 있어요. 기록 파일을 연결하면 PC에 자동 저장돼요.',
+      unbackedBtn: s.fsaBlocked ? '지금 백업' : '기록 파일 연결',
+      unbackedCount: Math.max(0, s.rev - s.backupRev),
+      restoreText: s.fsaBlocked ? '이 환경에서는 다시 접속하면 기록이 지워질 수 있어요. 이전에 내려받은 백업 파일이 있으면 불러오세요. 쓰는 동안에는 가끔 “지금 백업”으로 파일을 내려받아 두세요.' : '기록은 PC의 파일 하나에 저장해 두는 게 안전해요. 처음이면 새 기록 파일을 만들고, 이전에 쓰던 파일이나 백업이 있으면 열어 주세요.',
+      restorePrimary: s.fsaBlocked ? '백업 파일 불러오기' : '새 기록 파일 만들기', restoreSecondary: !s.fsaBlocked,
+      restorePrimaryAct: () => s.fsaBlocked ? this.openFile() : this.linkFile(),
+      linkBtnLabel: s.fsaBlocked ? '백업 내려받기' : '기록 파일 연결', openBtnLabel: s.fsaBlocked ? '백업 불러오기' : '기록 파일 열기',
+      footHint: draftLen ? `${draftLen}자${wide ? ' · ⌘↵ 저장' : ''}` : '제목도 분류도 필요 없어요. 쓰기만 하세요.',
+      isClassifying: s.phase === 'classifying', isDone: s.phase === 'done' && !!resNote, editing: s.editing, notEditing: !s.editing,
+      sheetOpen: s.phase !== 'idle', dismiss: () => this.dismiss(), holdSheet: () => clearTimeout(this.timer),
+      toggleCat: () => this.setState(st => ({ editing: !st.editing })), catToggleLabel: s.editing ? '닫기' : '바꾸기',
+      typing: draftLen > 0, notTyping: draftLen === 0, showNav: !wide && !(s.screen === 'write' && draftLen > 0),
+      shelf, libIsShelf: s.libView === 'shelf',
+      showRecent: draftLen === 0 && s.notes.length > 0, noNotes: s.notes.length === 0, hasMonth: mNotes.length > 0,
+      libSubtitle: s.notes.length ? `생각 ${s.notes.length}편이 ${s.cats.length}개 분야, ${s.cats.reduce((a, c) => a + c.subs.length, 0)}개 갈래로 저절로 정리되었어요.` : '아직 비어 있어요. 기록을 남기면 분야 아래 갈래가 저절로 자라요.',
+      exportData: () => this.exportData(), importData: e => this.importData(e), resetAll: () => this.resetAll(),
+      pickImport: () => this.fileIn && this.fileIn.click(), fileRef: el => { this.fileIn = el; },
+      res, catOptions, newTag: s.newTag,
+      onNewTag: e => this.setState({ newTag: e.target.value }),
+      onNewTagKey: e => { if (e.key === 'Enter' && resNote) { const t = s.newTag.trim().replace(/^#/, '').replace(/\s/g, ''); if (t && !resNote.tags.includes(t)) this.patch(resNote.id, { tags: [...resNote.tags, t] }); this.setState({ newTag: '' }); } },
+      recent: sorted.slice(0, 3).map(vm),
+      totalNotes: s.notes.length, totalCats: s.cats.length, totalSubs: s.cats.reduce((a, c) => a + c.subs.length, 0),
+      viewOpts: [['shelf', '책장'], ['card', '카드'], ['tree', '트리']].map(([k, l]) => ({ label: l, active: s.libView === k, inactive: s.libView !== k, pick: () => this.setState({ libView: k }) })),
+      libIsCard: s.libView === 'card', libIsTree: s.libView === 'tree', libCats,
+      catView, backToLibrary: () => this.go('library'),
+      det, back: () => this.back(), backLabel,
+      month, groups,
+      query: s.query, onQuery: e => this.setState({ query: e.target.value, answer: null }),
+      onQueryKey: e => { if (e.key === 'Enter' && isNL) this.ask(); },
+      ask: () => this.ask(), isNL, queryEmpty: !q, hasQuery: !!q && results.length > 0 || (!!q && !isNL),
+      examples: ['그때 학습부진 중재에 대해 뭐라고 썼더라?', '아이 시간 개념 얘기 언제 썼지?', '#역사적사고'].map(l => ({ label: l, pick: () => this.setState({ query: l, answer: null }, () => { if (!l.startsWith('#')) this.ask(); }) })),
+      aiLoading: s.aiLoading, hasAnswer: !!s.answer && !s.aiLoading, answerText: s.answer ? s.answer.text : '',
+      answerNotes: s.answer ? s.answer.ids.map(id => s.notes.find(n => n.id === id)).filter(Boolean).map(vm) : [],
+      results: results.map(vm), resultLabel: isNL ? `관련 있을 만한 기록 ${results.length}편` : `‘${q}’ 포함 ${results.length}편`,
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,10 +1,10 @@
 // 오프라인에서도 앱이 열리도록 앱 껍데기를 캐시한다. 기록 데이터는 IndexedDB에 있으므로 여기서 다루지 않는다.
-const VERSION = 'seojae-v1';
+const VERSION = 'seojae-v2';
 const SHELL = ['./', './index.html', './styles.css', './config.js', './manifest.webmanifest', './icons/icon.svg',
   './js/app.js', './js/morph.js', './js/util.js', './js/store.js', './js/sync.js', './js/ai.js', './js/net.js'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'no-store' })))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSION).map(k => caches.delete(k)))).then(() => self.clients.claim()));
@@ -27,8 +27,8 @@ self.addEventListener('fetch', e => {
     return;
   }
   if (url.origin !== location.origin) return;
-  // 앱 파일은 네트워크 우선(최신 버전), 실패하면 캐시
-  e.respondWith(fetch(req).then(res => {
+  // 앱 파일은 네트워크 우선(최신 버전, 브라우저 HTTP 캐시도 건너뜀), 실패할 때만 캐시
+  e.respondWith(fetch(req, { cache: 'no-store' }).then(res => {
     if (res.ok) { const copy = res.clone(); caches.open(VERSION).then(c => c.put(req, copy)); }
     return res;
   }).catch(() => caches.match(req, { ignoreSearch: true }).then(r => r || caches.match('./index.html'))));

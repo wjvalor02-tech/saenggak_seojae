@@ -2,7 +2,8 @@
 import { db, clean } from './store.js';
 
 const cfg = () => (window.SEOJAE_CONFIG || {});
-const base = () => (cfg().supabaseUrl || '').replace(/\/$/, '');
+// 'https://xxx.supabase.co/rest/v1/'처럼 API 경로까지 붙여 넣어도 프로젝트 주소만 쓴다
+const base = () => (cfg().supabaseUrl || '').trim().replace(/\/+$/, '').replace(/\/(rest|auth|functions)\/v1$/, '');
 const anon = () => cfg().supabaseAnonKey || '';
 
 let session = null; // { access_token, refresh_token, expires_at, user: { id, email } }
@@ -34,25 +35,50 @@ async function saveSession(s) {
   emit();
 }
 
+// 로그인 유지 원칙: 사용자가 로그아웃하지 않는 한 세션을 지우지 않는다.
+// 오프라인·서버 오류·일시적 실패에서는 기존 세션을 그대로 두고 다음에 다시 갱신한다.
+// 서버가 "이 갱신 토큰은 더는 유효하지 않다"고 분명히 답할 때만 세션을 내려놓는다.
+const DEAD_TOKEN = /refresh_token_not_found|refresh_token_already_used|session_not_found|session_expired|user_not_found|user_banned|invalid refresh token|refresh token is not valid/i;
+const nowS = () => Date.now() / 1000;
+const fresh = s => s && s.expires_at && s.expires_at - 300 > nowS();
+
+// 여러 탭이 동시에 갱신하면 갱신 토큰이 '이미 사용됨'이 될 수 있어 탭 간 잠금으로 한 번에 하나만
+function withLock(fn) {
+  if (navigator.locks && navigator.locks.request) return navigator.locks.request('seojae-auth-refresh', fn);
+  return fn();
+}
+
 async function refresh() {
   if (!session || !session.refresh_token) return false;
-  try {
-    const r = await fetch(`${base()}/auth/v1/token?grant_type=refresh_token`, {
-      method: 'POST', headers: { apikey: anon(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: session.refresh_token }),
-    });
-    if (!r.ok) {
-      if (r.status === 400 || r.status === 401) { await saveSession(null); }
-      return false;
-    }
-    const j = await r.json();
-    await saveSession(fromAuthResponse(j, session.user));
-    return true;
-  } catch (e) { return false; } // 오프라인이면 기존 세션 유지
+  return withLock(async () => {
+    // 다른 탭이 방금 갱신했으면 그 세션을 그대로 쓴다
+    const stored = await db.get('session').catch(() => null);
+    if (stored && stored.refresh_token !== session.refresh_token && fresh(stored)) { session = stored; emit(); return true; }
+    if (!stored && session) { /* 다른 탭에서 로그아웃 */ session = null; emit(); return false; }
+    try {
+      const r = await fetch(`${base()}/auth/v1/token?grant_type=refresh_token`, {
+        method: 'POST', headers: { apikey: anon(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: session.refresh_token }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        const msg = [j.error_code, j.code, j.error, j.msg, j.message, j.error_description].filter(Boolean).join(' ');
+        if ((r.status === 400 || r.status === 401) && DEAD_TOKEN.test(msg)) {
+          // 갱신 토큰이 정말 끝났다 → 다시 로그인해야 함(이 기기의 기록은 그대로 남음)
+          await saveSession(null);
+          setStatus({ state: 'error', error: '로그인이 만료됐어요. 다시 로그인하면 이어서 동기화돼요.' });
+        }
+        return false;
+      }
+      const j = await r.json();
+      await saveSession(fromAuthResponse(j, session.user));
+      return true;
+    } catch (e) { return false; } // 오프라인이면 기존 세션 유지
+  });
 }
 
 async function ensureFresh() {
-  if (session && session.expires_at && session.expires_at - 60 < Date.now() / 1000) await refresh();
+  if (session && !fresh(session) && navigator.onLine) await refresh();
 }
 
 function fromAuthResponse(j, fallbackUser) {
@@ -89,6 +115,22 @@ export const sync = {
       setStatus({ state: 'error', error: '로그인 링크가 만료됐거나 잘못됐어요. 다시 받아 주세요.' });
     }
     emit();
+    this.keepAlive();
+  },
+
+  // 앱이 열려 있는 동안 토큰을 미리미리 갱신해 둔다(만료 5분 전, 앱으로 돌아올 때, 다시 온라인이 될 때)
+  keepAlive() {
+    if (this._alive) return;
+    this._alive = true;
+    const tick = async () => {
+      // 메일 링크를 다른 탭에서 눌러 로그인한 경우 그 세션을 이 탭도 이어받는다
+      if (!session) { const s = await db.get('session').catch(() => null); if (s) { session = s; emit(); } }
+      ensureFresh().catch(() => {});
+    };
+    tick();
+    setInterval(tick, 4 * 60 * 1000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') tick(); });
+    window.addEventListener('online', tick);
   },
 
   async sendLink(email) {
@@ -182,7 +224,8 @@ export const sync = {
         await db.set('lastPull', maxPull);
         setStatus({ state: 'ok', at: new Date().toISOString(), error: null });
       } catch (e) {
-        setStatus({ state: navigator.onLine ? 'error' : 'offline', error: navigator.onLine ? '동기화하지 못했어요. 잠시 후 다시 시도할게요.' : null });
+        const msg = !session ? '로그인이 만료됐어요. 다시 로그인하면 이어서 동기화돼요.' : navigator.onLine ? '동기화하지 못했어요. 잠시 후 다시 시도할게요.' : null;
+        setStatus({ state: navigator.onLine ? 'error' : 'offline', error: msg });
       } finally {
         syncing = null;
       }

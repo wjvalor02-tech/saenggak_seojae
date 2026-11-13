@@ -5,6 +5,14 @@ import { catOf } from './util.js';
 
 export const TAG_RULES = [[/달리|러닝|km|조깅/, '러닝'], [/스쿼트|근력|PT|헬스/, '근력운동'], [/부진/, '학습부진'], [/중재/, '중재연구'], [/사료|자료/, '사료'], [/연표|연대/, '연대기'], [/루브릭/, '루브릭'], [/서술형|채점/, '서술형평가'], [/도입/, '도입활동'], [/시간/, '시간개념'], [/말|단어|언어/, '언어발달'], [/인물/, '인물학습'], [/사고력|역사적 사고/, '역사적사고'], [/기초선/, '기초선'], [/질문|발문/, '발문'], [/모둠|협동/, '모둠활동'], [/잠|재우/, '잠자리'], [/책/, '책'], [/조선/, '조선'], [/고려/, '고려'], [/근대|개항/, '근대']];
 
+// 1~2문장짜리 짧은 글은 요약하지 않고 글 자체를 한 줄로 쓴다
+export const oneLine = t => String(t).replace(/\s+/g, ' ').trim();
+export function isShort(text) {
+  const t = oneLine(text);
+  const sentences = String(text).split(/(?<=[.!?。？！…])\s+|\n+/).map(s => s.trim()).filter(Boolean);
+  return sentences.length <= 2 && t.length <= 90;
+}
+
 export function heuristic(text) {
   let cat = 'daily', sub = '생각';
   if (/아이|딸|아들|육아|어린이집|서윤/.test(text)) { cat = 'parent'; sub = /잠|재우|밥|씻/.test(text) ? '잠·생활' : '말·언어'; }
@@ -49,16 +57,22 @@ export const ai = {
 
   // → { cat, sub, tags, summary, aiPending?, aiProvider? }
   async classify(text, cats, book) {
+    const r = await this._classify(text, cats, book);
+    if (isShort(text)) r.summary = oneLine(text);
+    return r;
+  },
+
+  async _classify(text, cats, book) {
     const taxonomy = cats.map(c => `${c.key}(${c.name}): ${c.subs.map(s => s.name).join(', ')}`).join('\n');
     const bookLine = book ? `[이 글은 책 『${book.title}』${book.author ? `(${book.author})` : ''}에 관한 기록]\n` : '';
-    const r = await call('classify', { text: bookLine + text, taxonomy, keys: cats.map(c => c.key) });
+    const r = await call('classify', { text: bookLine + text, taxonomy, keys: cats.map(c => c.key), short: isShort(text) });
     if (r) {
       const j = r.result;
-      if (cats.find(c => c.key === j.cat) && j.sub && Array.isArray(j.tags) && j.summary) {
+      if (cats.find(c => c.key === j.cat) && j.sub && Array.isArray(j.tags) && (j.summary || isShort(text))) {
         return {
           cat: j.cat, sub: String(j.sub).trim(),
           tags: j.tags.map(t => String(t).replace(/^#/, '').replace(/\s/g, '')).filter(Boolean).slice(0, 4),
-          summary: String(j.summary), aiProvider: r.provider,
+          summary: String(j.summary || ''), aiProvider: r.provider,
         };
       }
     }

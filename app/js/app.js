@@ -2,7 +2,7 @@ import { morph, esc } from './morph.js';
 import { CATS, catOf, catColor, todayS, pd, daysAgo, fmt, fmtPlain, shortDate, rel, todayLabel, uid, bookMeta, DOW } from './util.js';
 import { db, deriveCats, normalizeImport, clean, requestPersist } from './store.js';
 import { sync } from './sync.js';
-import { ai, nlScore } from './ai.js';
+import { ai, nlScore, isShort, oneLine } from './ai.js';
 import { layoutNet } from './net.js';
 
 // ───────────────────────── 상태 ─────────────────────────
@@ -17,7 +17,7 @@ const S = {
   checks: null, checkStatus: 'idle', bodyEditing: false, bodyDraft: '', netSel: null,
   listening: false, voiceErr: null, book: null, bookStatus: 'idle', bookDismissed: false,
   email: '', code: '', loginStage: 'idle', loginErr: null, loginBusy: false,
-  lastExport: null, aiUsage: {}, toast: null,
+  lastExport: null, aiUsage: {}, toast: null, landingDone: false,
 };
 const root = document.getElementById('app');
 let timer = null, bookTimer = null, bookToken = null, checkToken = null, lastKey = null, lastLen = 0, rec = null, toastTimer = null, syncTimer = null;
@@ -247,7 +247,8 @@ function addSub(id) { const v = S.newSub.trim(); if (!v) return; const n = findN
 function saveBody(id) {
   const body = S.bodyDraft.trim(); if (!body) return;
   const n = findNote(id); if (!n) return;
-  writeNote({ ...n, body, ...(body !== n.body ? { edited: todayS() } : {}) });
+  // 짧은 글은 요약 대신 글 자체가 제목 역할을 하므로 함께 바꾼다
+  writeNote({ ...n, body, ...(isShort(body) ? { summary: oneLine(body) } : {}), ...(body !== n.body ? { edited: todayS() } : {}) });
   set({ bodyEditing: false });
 }
 function deleteNote(id) {
@@ -311,6 +312,9 @@ function resetAll() {
 }
 
 // ───────────────────────── 로그인 ─────────────────────────
+// 랜딩 페이지는 처음 한 번만: 로그인에 성공하거나 '나중에'를 고르면 다시 띄우지 않는다
+function finishLanding() { if (!S.landingDone) { set({ landingDone: true }); db.set('landingDone', true); } }
+const showLanding = () => S.ready && sync.configured() && !sync.session() && !S.landingDone;
 async function sendLink() {
   const email = S.email.trim(); if (!/.+@.+\..+/.test(email)) { set({ loginErr: '이메일 주소를 확인해 주세요.' }); return; }
   set({ loginBusy: true, loginErr: null });
@@ -319,7 +323,7 @@ async function sendLink() {
 }
 async function verifyCode() {
   set({ loginBusy: true, loginErr: null });
-  try { await sync.verifyCode(S.email.trim(), S.code.trim()); set({ loginStage: 'idle', code: '', loginBusy: false }); toast('로그인했어요. 기록을 맞추는 중이에요.'); runSync(); }
+  try { await sync.verifyCode(S.email.trim(), S.code.trim()); set({ loginBusy: false }); } // 이후 처리는 sync.subscribe에서
   catch (e) { set({ loginErr: e.message, loginBusy: false }); }
 }
 
@@ -351,6 +355,7 @@ const A = {
   syncNow: () => runSync(),
   signOut: async () => { if (confirm('로그아웃할까요? 이 기기의 기록은 그대로 남아요.')) { await sync.signOut(); toast('로그아웃했어요.'); } },
   loginReset: () => set({ loginStage: 'idle', code: '', loginErr: null }),
+  skipLanding: () => { finishLanding(); focusDraft(); },
 };
 const IN = {
   draft: onDraft, newTag: v => set({ newTag: v }), newSub: v => set({ newSub: v }), bodyDraft: v => set({ bodyDraft: v }),
@@ -392,8 +397,29 @@ const each = (list, fn) => list.map(fn).join('');
 const act = (name, arg = '', extra = '') => `data-act="${name}" data-arg="${esc(arg)}"${extra}`;
 const micSvg = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"></path></svg>';
 
+function vLanding() {
+  return `<div class="landing">
+  <div class="landing-col">
+    <div class="landing-logo">생각서재</div>
+    <h1 class="landing-title">떠오르는 생각을<br>쓰기만 하세요.</h1>
+    <p class="landing-sub">제목도 폴더도 고르지 않아도 돼요. 저장하면 분야와 갈래, 태그가 저절로 붙고, 글이 쌓일수록 서재가 자라요.</p>
+    <ul class="landing-points">
+      <li><span class="dot"></span>휴대폰과 PC의 기록이 하나로 이어져요</li>
+      <li><span class="dot"></span>인터넷이 끊겨도 쓰고, 연결되면 알아서 맞춰요</li>
+      <li><span class="dot"></span>로그아웃하기 전까지 로그인이 유지돼요</li>
+    </ul>
+    <div class="card landing-card">
+      <div class="label" style="margin-bottom:12px">이메일로 시작하기</div>
+      ${vLogin(true)}
+    </div>
+    <button class="btn-t landing-skip" ${act('skipLanding')}>로그인 없이 이 기기에서 먼저 써 볼게요</button>
+  </div>
+</div>`;
+}
+
 function render() {
   if (!S.ready) return;
+  if (showLanding()) { morph(root, vLanding()); ta = null; return; }
   const wide = S.w >= 900;
   const draftLen = S.draft.trim().length;
   const navActive = S.tab;
@@ -565,7 +591,7 @@ function vSheet(cs) {
           <input class="dashed" placeholder="+ 추가" value="${esc(S.newTag)}" data-in="newTag" data-kd="newTag">
         </div>
         ${n.book ? `<div style="font-size:14px;line-height:1.5">📖 『${esc(n.book.title)}』 <span style="color:var(--ink-2)">${esc(bookMeta(n.book))}</span></div>` : ''}
-        <div class="serif" style="font-size:15.5px;line-height:1.6;color:var(--ink-2)">“${esc(n.summary)}”</div>
+        ${x(!isShort(n.body), `<div class="serif" style="font-size:15.5px;line-height:1.6;color:var(--ink-2)">“${esc(n.summary)}”</div>`)}
         ${x(n.checks && n.checks.length, `<div style="font-size:13px;color:var(--caution)">확인할 내용 ${(n.checks || []).length}개를 글에 함께 남겼어요.</div>`)}
         ${x(S.resNote, `<div style="font-size:13px;color:var(--ink-3)">${esc(S.resNote)}</div>`)}
       </div>
@@ -700,7 +726,7 @@ function vDetail(cs) {
     ${each(n.body.split('\n').filter(p => p.trim()), p => `<p class="para">${esc(p)}</p>`)}
   </div>`}
   ${x(n.checks && n.checks.length, `<div class="card checks stack"><div class="label" style="color:var(--ink-2);padding-bottom:8px">아직 확인하지 않은 내용</div>${vChecks(n.checks, 'note')}</div>`)}
-  <div class="summary-box"><div class="label" style="color:var(--ink-2)">${n.aiPending && sync.configured() ? '한 줄 요약 · AI 정리 대기 중' : n.aiPending ? '한 줄 요약' : 'AI 한 줄 요약'}</div><div style="font-size:16px;line-height:1.6">${esc(n.summary)}</div></div>
+  ${x(!isShort(n.body), `<div class="summary-box"><div class="label" style="color:var(--ink-2)">${n.aiPending && sync.configured() ? '한 줄 요약 · AI 정리 대기 중' : n.aiPending ? '한 줄 요약' : 'AI 한 줄 요약'}</div><div style="font-size:16px;line-height:1.6">${esc(n.summary)}</div></div>`)}
   <div class="stack g4" style="margin-top:12px">
     <h2 class="serif" style="margin:0 0 8px;font-size:20px;font-weight:700">이 글과 관련된 생각</h2>
     ${rels.length ? each(rels, r => { const rc = catOf(r.n.cat); return `<div class="rel-row" ${act('openNote', r.n.id)}>
@@ -810,15 +836,30 @@ async function boot() {
     const aiUsage = { ...S.aiUsage, [m]: (S.aiUsage[m] || 0) + 1 };
     set({ aiUsage, lastProvider: r.provider }); db.set('aiUsage', aiUsage);
   };
-  sync.subscribe(() => render());
+  let hadSession = false;
+  sync.subscribe(() => {
+    const has = !!sync.session();
+    if (has && !hadSession && S.ready) {
+      // 막 로그인됨(코드 입력, 메일 링크, 다른 탭) → 랜딩을 닫고 바로 동기화
+      const wasLanding = showLanding();
+      finishLanding();
+      set({ loginStage: 'idle', code: '' });
+      runSync();
+      if (wasLanding) { go('write'); toast('로그인했어요. 기록을 맞추는 중이에요.'); }
+    }
+    hadSession = has;
+    render();
+  });
   try {
-    const [notes, subBorn, lastExport, aiUsage, libView] = await Promise.all([db.allNotes(), db.get('subBorn'), db.get('lastExport'), db.get('aiUsage'), db.get('libView')]);
-    Object.assign(S, { notes: notes || [], subBorn: subBorn || {}, lastExport: lastExport || null, aiUsage: aiUsage || {}, libView: libView || 'shelf' });
+    const [notes, subBorn, lastExport, aiUsage, libView, landingDone] = await Promise.all([db.allNotes(), db.get('subBorn'), db.get('lastExport'), db.get('aiUsage'), db.get('libView'), db.get('landingDone')]);
+    Object.assign(S, { notes: notes || [], subBorn: subBorn || {}, lastExport: lastExport || null, aiUsage: aiUsage || {}, libView: libView || 'shelf', landingDone: !!landingDone });
   } catch (e) {
     Object.assign(S, { toast: '이 브라우저에서는 기록을 저장할 수 없어요(비공개 모드인지 확인해 주세요).' });
   }
   try { const d = localStorage.getItem('seojae-draft'); if (d) S.draft = d; } catch (e) { /* 무시 */ }
   await sync.init();
+  hadSession = !!sync.session();
+  if (hadSession && !S.landingDone) { S.landingDone = true; db.set('landingDone', true); }
   S.ready = true;
   history.replaceState(snapshot(), '');
   render();
@@ -832,5 +873,5 @@ async function boot() {
 boot();
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {}));
 }
