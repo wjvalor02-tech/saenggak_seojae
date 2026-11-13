@@ -39,6 +39,8 @@ jobs:
             exit 1
           fi
 
-      # supabase/functions/ 안의 모든 함수를 배포(--use-api: Docker 없이 서버에서 번들링)
+      # supabase/functions/ 안의 모든 함수를 배포
+      #   --use-api: Docker 없이 서버에서 번들링
+      #   --yes: CI에는 확인 질문에 답할 터미널이 없으므로 자동 승인
       - name: Deploy functions
-        run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID" --use-api
+        run: supabase functions deploy --remote="$SUPABASE_PROJECT_ID" --use-api --yes
