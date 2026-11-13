@@ -145,14 +145,19 @@ export const sync = {
     }
   },
 
+  // 처음 가입하는 주소는 'Confirm signup' 메일의 코드, 이미 가입한 주소는 'Magic Link' 메일의 코드가 온다.
+  // 'email' 유형이 둘 다 처리하지만, 혹시 실패하면 'signup' 유형으로 한 번 더 확인한다.
   async verifyCode(email, token) {
-    const r = await fetch(`${base()}/auth/v1/verify`, {
-      method: 'POST', headers: { apikey: anon(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'email', email, token }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok || !j.access_token) throw new Error('코드가 맞지 않거나 만료됐어요.');
-    await saveSession(fromAuthResponse(j));
+    let j = {};
+    for (const type of ['email', 'signup']) {
+      const r = await fetch(`${base()}/auth/v1/verify`, {
+        method: 'POST', headers: { apikey: anon(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, email, token }),
+      });
+      j = await r.json().catch(() => ({}));
+      if (r.ok && j.access_token) { await saveSession(fromAuthResponse(j)); return; }
+    }
+    throw new Error('코드가 맞지 않거나 만료됐어요. 메일을 다시 받아 가장 최근 코드를 넣어 주세요.');
   },
 
   async signOut() {

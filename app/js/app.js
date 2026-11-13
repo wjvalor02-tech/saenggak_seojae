@@ -252,11 +252,13 @@ function saveBody(id) {
   set({ bodyEditing: false });
 }
 function deleteNote(id) {
-  if (!confirm('이 글을 삭제할까요? 되돌릴 수 없어요.')) return;
+  if (!confirm('이 글을 삭제할까요? 되돌릴 수 없어요.' + (sync.session() ? ' 동기화된 다른 기기에서도 지워져요.' : ''))) return;
   const n = findNote(id); if (!n) return;
-  writeNote({ ...n, deletedAt: new Date().toISOString() });
+  // 다른 기기에도 삭제를 알리기 위한 표시만 남기고, 본문·요약·태그 등 내용은 지운다
+  writeNote({ id: n.id, date: n.date, cat: n.cat, sub: n.sub, tags: [], summary: '', body: '', createdAt: n.createdAt, deletedAt: new Date().toISOString() });
   set({ bodyEditing: false });
   back();
+  toast('글을 삭제했어요.');
 }
 
 // ───────────────────────── 검색 ─────────────────────────
@@ -307,7 +309,7 @@ function importData(file) {
 function resetAll() {
   if (!confirm('모든 기록을 지울까요? 되돌릴 수 없어요.' + (sync.session() ? ' 동기화된 다른 기기에서도 지워져요.' : ''))) return;
   const now = new Date().toISOString();
-  const notes = S.notes.map(n => n.deletedAt ? n : { ...n, deletedAt: now, updatedAt: now, dirty: true });
+  const notes = S.notes.map(n => n.deletedAt ? n : { id: n.id, date: n.date, cat: n.cat, sub: n.sub, tags: [], summary: '', body: '', createdAt: n.createdAt, deletedAt: now, updatedAt: now, dirty: true });
   db.putNotes(notes); set({ notes, phase: 'idle' }); go('write'); scheduleSync(200);
 }
 
@@ -704,7 +706,10 @@ function vDetail(cs) {
   return `<article class="stack g28">
   <div class="row between g12">
     <button class="btn-t" ${act('back')}>← ${esc(S.depth > 0 && S.from ? S.from : '서재')}</button>
-    ${x(!S.bodyEditing, `<button class="btn-o sm" style="min-height:40px;padding:8px 16px" ${act('startBodyEdit')}>글 수정</button>`)}
+    ${x(!S.bodyEditing, `<div class="row g6">
+      <button class="btn-danger" style="min-height:40px;padding:8px 12px" ${act('deleteNote')}>삭제</button>
+      <button class="btn-o sm" style="min-height:40px;padding:8px 16px" ${act('startBodyEdit')}>글 수정</button>
+    </div>`)}
   </div>
   <div class="stack g10">
     <div class="row g8 wrap" style="font-size:13.5px;color:var(--ink-2)"><span>${c.emoji} ${c.name} › ${esc(n.sub)}</span><span style="color:#B3AA9C">·</span><span>${fmt(n.date)}</span><button class="link-accent" style="padding-left:4px" ${act('toggleDetEdit')}>${S.detailEditing ? '닫기' : '분류 수정'}</button></div>
