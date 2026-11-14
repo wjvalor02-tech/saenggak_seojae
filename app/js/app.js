@@ -19,7 +19,9 @@ const S = {
   email: '', code: '', loginStage: 'idle', loginErr: null, loginBusy: false,
   lastExport: null, aiUsage: {}, toast: null, landingDone: false,
   // 분야 관리
-  catsAt: null, catsDirty: false, catMgr: false, newCatName: '', newCatEmoji: '', catErr: null, delCat: null, delTarget: null,
+  catsAt: null, catsDirty: false, catAdd: false, catEdit: null, editCatName: '', editCatEmoji: '',
+  newCatName: '', newCatEmoji: '', catErr: null, delCat: null, delTarget: null,
+  tagsDraft: [], newTagDraft: '',
 };
 const root = document.getElementById('app');
 let timer = null, bookTimer = null, bookToken = null, checkToken = null, lastKey = null, lastLen = 0, rec = null, toastTimer = null, syncTimer = null;
@@ -68,9 +70,26 @@ function addCat() {
   if (!name) { set({ catErr: '분야 이름을 적어 주세요.' }); return; }
   if (getCats().length >= MAX_CATS) { set({ catErr: `분야는 ${MAX_CATS}개까지 만들 수 있어요.` }); return; }
   if (getCats().some(c => c.name === name)) { set({ catErr: '같은 이름의 분야가 이미 있어요.' }); return; }
-  saveCats([...getCats(), { key: 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name, emoji, hue: nextHue() }]);
-  set({ newCatName: '', newCatEmoji: '', catErr: null });
-  toast(`‘${name}’ 분야를 만들었어요.`);
+  const key = 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  saveCats([...getCats(), { key, name, emoji, hue: nextHue() }]);
+  // 새로 꽂은 책을 바로 골라 둔다
+  set({ newCatName: '', newCatEmoji: '', catErr: null, catAdd: false, shelfKey: key });
+  toast(`‘${name}’ 분야를 책장에 꽂았어요.`);
+}
+function startEditCat(key) {
+  const c = getCats().find(x => x.key === key); if (!c) return;
+  set({ catEdit: key, editCatName: c.name, editCatEmoji: c.emoji, delCat: null, catErr: null, catAdd: false, shelfKey: key });
+}
+function saveEditCat() {
+  const key = S.catEdit; const c = getCats().find(x => x.key === key); if (!c) return;
+  const name = S.editCatName.replace(/[<>&"'`]/g, '').trim();
+  const emoji = S.editCatEmoji.replace(/[<>&"'`\s]/g, '').trim() || '📁';
+  if (!name) { set({ catErr: '분야 이름을 적어 주세요.' }); return; }
+  if (getCats().some(x => x.key !== key && x.name === name)) { set({ catErr: '같은 이름의 분야가 이미 있어요.' }); return; }
+  // key는 그대로라서 글들은 따로 옮길 필요 없이 새 이름으로 보인다
+  if (name !== c.name || emoji !== c.emoji) saveCats(getCats().map(x => x.key === key ? { ...x, name, emoji } : x));
+  set({ catEdit: null, catErr: null });
+  if (name !== c.name) toast(`‘${c.name}’ → ‘${name}’(으)로 바꿨어요.`);
 }
 function askDeleteCat(key) {
   if (getCats().length <= 1) { set({ catErr: '분야는 하나 이상 있어야 해요.' }); return; }
@@ -87,7 +106,7 @@ async function deleteCat() {
   // 글을 먼저 옮기고(갈래 이름은 그대로) 분야를 지운다
   for (const n of moving) { addBorn(target.key, n.sub); await writeNote({ ...n, cat: target.key, userSorted: true }); }
   await saveCats(getCats().filter(x => x.key !== key));
-  set({ delCat: null, delTarget: null, shelfKey: S.shelfKey === key ? null : S.shelfKey });
+  set({ delCat: null, delTarget: null, catEdit: null, shelfKey: S.shelfKey === key ? null : S.shelfKey });
   toast(moving.length ? `글 ${moving.length}편을 ‘${target.name}’(으)로 옮기고 분야를 지웠어요.` : `‘${c.name}’ 분야를 지웠어요.`);
 }
 function resetCats() {
@@ -294,12 +313,34 @@ function setCatSub(id, cat, sub) {
 function addSub(id) { const v = S.newSub.trim(); if (!v) return; const n = findNote(id); if (!n) return; setCatSub(id, n.cat, v); set({ newSub: '' }); }
 
 // ───────────────────────── 글 수정·삭제 ─────────────────────────
+// 태그: '#'·띄어쓰기를 빼고, 20자 이내, 중복 없이, 최대 8개
+const cleanTag = t => String(t).replace(/^#+/, '').replace(/[\s,#<>&"'`]/g, '').slice(0, 20);
+function addTagWord(w) {
+  const t = cleanTag(w);
+  if (!t || S.tagsDraft.includes(t) || S.tagsDraft.length >= 8) return;
+  S.tagsDraft = [...S.tagsDraft, t];
+}
+function addTagDraft() { addTagWord(S.newTagDraft); set({ newTagDraft: '', tagsDraft: S.tagsDraft }); }
+
+function startBodyEdit() {
+  const n = findNote(S.noteId); if (!n) return;
+  set({ bodyEditing: true, bodyDraft: n.body, tagsDraft: [...n.tags], newTagDraft: '', detailEditing: false });
+}
 function saveBody(id) {
   const body = S.bodyDraft.trim(); if (!body) return;
   const n = findNote(id); if (!n) return;
-  // 짧은 글은 요약 대신 글 자체가 제목 역할을 하므로 함께 바꾼다
-  writeNote({ ...n, body, ...(isShort(body) ? { summary: oneLine(body) } : {}), ...(body !== n.body ? { edited: todayS() } : {}) });
-  set({ bodyEditing: false });
+  if (S.newTagDraft.trim()) addTagWord(S.newTagDraft); // 입력칸에 쓰다 만 태그도 함께 저장
+  const tags = [...S.tagsDraft];
+  const tagsChanged = tags.join('\u0001') !== n.tags.join('\u0001');
+  writeNote({
+    ...n, body, tags,
+    // 짧은 글은 요약 대신 글 자체가 제목 역할을 하므로 함께 바꾼다
+    ...(isShort(body) ? { summary: oneLine(body) } : {}),
+    ...(body !== n.body || tagsChanged ? { edited: todayS() } : {}),
+    // 직접 고친 태그는 나중에 AI가 다시 정리할 때 덮어쓰지 않는다
+    ...(tagsChanged ? { userSorted: true } : {}),
+  });
+  set({ bodyEditing: false, newTagDraft: '' });
 }
 function deleteNote(id) {
   if (!confirm('이 글을 삭제할까요? 되돌릴 수 없어요.' + (sync.session() ? ' 동기화된 다른 기기에서도 지워져요.' : ''))) return;
@@ -398,9 +439,9 @@ const A = {
   addSub: a => addSub(a),
   removeTag: (a, el) => { const n = findNote(el.dataset.id); if (n) patch(n.id, { tags: n.tags.filter(t => t !== a), userSorted: true }); },
   libView: a => set({ libView: a }),
-  shelf: a => set({ shelfKey: a }),
+  shelf: a => set({ shelfKey: a, catAdd: false, catEdit: S.catEdit === a ? a : null, delCat: null, catErr: null }),
   subFilter: a => set({ subFilter: a || null }),
-  startBodyEdit: () => { const n = findNote(S.noteId); if (n) set({ bodyEditing: true, bodyDraft: n.body }); },
+  startBodyEdit,
   cancelBodyEdit: () => set({ bodyEditing: false }),
   saveBody: () => saveBody(S.noteId),
   deleteNote: () => deleteNote(S.noteId),
@@ -412,13 +453,26 @@ const A = {
   signOut: async () => { if (confirm('로그아웃할까요? 이 기기의 기록은 그대로 남아요.')) { await sync.signOut(); toast('로그아웃했어요.'); } },
   loginReset: () => set({ loginStage: 'idle', code: '', loginErr: null }),
   skipLanding: () => { finishLanding(); focusDraft(); },
-  toggleCatMgr: () => set({ catMgr: !S.catMgr, delCat: null, catErr: null }),
-  addCat, askDeleteCat: a => askDeleteCat(a), deleteCat, resetCats,
+  // 책장에서 바로 분야 추가·수정·삭제
+  openCatAdd: () => set({ catAdd: true, catEdit: null, delCat: null, catErr: null }),
+  closeCatAdd: () => set({ catAdd: false, catErr: null, newCatName: '', newCatEmoji: '' }),
+  addCat, startEditCat: a => startEditCat(a), saveEditCat,
+  cancelEditCat: () => set({ catEdit: null, delCat: null, catErr: null }),
+  askDeleteCat: a => askDeleteCat(a), deleteCat, resetCats,
   cancelDeleteCat: () => set({ delCat: null, delTarget: null }),
   delTarget: a => set({ delTarget: a }),
+  // 글 수정 화면의 태그
+  removeTagDraft: a => set({ tagsDraft: S.tagsDraft.filter(t => t !== a) }),
+  addTagDraft: () => addTagDraft(),
 };
 const IN = {
   newCatName: v => set({ newCatName: v, catErr: null }), newCatEmoji: v => set({ newCatEmoji: v, catErr: null }),
+  editCatName: v => set({ editCatName: v, catErr: null }), editCatEmoji: v => set({ editCatEmoji: v, catErr: null }),
+  newTagDraft: v => {
+    // 쉼표나 띄어쓰기를 치면 그때까지 쓴 말을 태그로 만든다
+    if (/[,\s]/.test(v)) { v.split(/[,\s]+/).slice(0, -1).forEach(addTagWord); set({ newTagDraft: v.split(/[,\s]+/).pop() }); }
+    else set({ newTagDraft: v });
+  },
   draft: onDraft, newTag: v => set({ newTag: v }), newSub: v => set({ newSub: v }), bodyDraft: v => set({ bodyDraft: v }),
   query: v => set({ query: v, answer: null }), email: v => set({ email: v, loginErr: null }), code: v => set({ code: v.replace(/\D/g, '').slice(0, 10), loginErr: null }),
 };
@@ -437,6 +491,12 @@ const KD = {
   email: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); sendLink(); } },
   code: e => { if (e.key === 'Enter') { e.preventDefault(); verifyCode(); } },
   newCatName: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addCat(); } },
+  editCatName: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); saveEditCat(); } },
+  newTagDraft: e => {
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addTagDraft(); }
+    // 빈 칸에서 지우기를 누르면 마지막 태그를 지운다
+    else if (e.key === 'Backspace' && !S.newTagDraft && S.tagsDraft.length) set({ tagsDraft: S.tagsDraft.slice(0, -1) });
+  },
 };
 root.addEventListener('click', e => {
   if (e.target.closest('.sheet')) clearTimeout(timer); // 시트를 만지면 자동 닫힘 멈춤
@@ -678,16 +738,29 @@ function vLibrary(cs) {
   const subA = (c, sb) => `${act('openCat', c.key)} data-sub="${esc(sb.name)}"`;
 
   let body = '';
-  if (S.libView === 'shelf') body = `<div class="stack g28">
-    <div class="stack"><div class="shelf">
-      ${each(lib, c => `<button class="spine${c.key === openKey ? ' on' : ''}" style="width:${38 + Math.round(c.count / maxC * 20)}px;height:${130 + Math.round(c.count / maxC * 120)}px;background:${catColor(c.hue)}" ${act('shelf', c.key)} aria-label="${c.name} ${c.count}편"><span class="nm">${c.name}</span><span class="ct">${c.count}</span></button>`)}
-    </div><div class="shelf-board"></div></div>
-    <div class="stack">
-      <div class="row between" style="align-items:baseline;padding-bottom:10px"><span class="serif" style="font-size:21px;font-weight:700">${oc.emoji} ${oc.name}의 목차</span><span style="font-size:13px;color:var(--accent);padding:6px 0" ${act('openCat', oc.key)}>전체 ${oc.count}편 →</span></div>
+  if (S.libView === 'shelf') {
+    const canAdd = getCats().length < MAX_CATS;
+    const editing = !S.catAdd && S.catEdit === oc.key && !oc.virtual;
+    const toc = `
       ${each(oc.subs, (sb, i) => `<div class="toc-row" ${subA(oc, sb)}><span class="row g10"><span style="color:var(--ink-3);width:28px">${i + 1}장</span>${esc(sb.name)}${x(sb.isNew, '<span class="new-badge">새 갈래</span>')}</span><span style="color:var(--ink-3);font-size:13px">${sb.count}</span></div>`)}
       ${x(!oc.subs.length, `<div style="border-top:1px solid var(--line);padding:16px 0;font-size:14.5px;color:var(--ink-3)">아직 갈래가 없어요. 이 분야의 글이 쌓이면 목차가 생겨요.</div>`)}
-      ${x(oc.latest, `<div class="stack g6" style="border-top:1px solid var(--line);padding-top:16px" ${act('openNote', oc.latestId)}><span style="font-size:12px;color:var(--ink-3);letter-spacing:0.06em">가장 최근 페이지 · ${oc.last}</span><span class="serif" style="font-size:16.5px;line-height:1.6">“${esc(oc.latest)}”</span></div>`)}
-    </div></div>`;
+      ${x(oc.latest, `<div class="stack g6" style="border-top:1px solid var(--line);padding-top:16px" ${act('openNote', oc.latestId)}><span style="font-size:12px;color:var(--ink-3);letter-spacing:0.06em">가장 최근 페이지 · ${oc.last}</span><span class="serif" style="font-size:16.5px;line-height:1.6">“${esc(oc.latest)}”</span></div>`)}`;
+    const header = `<div class="row between g8" style="align-items:baseline;padding-bottom:10px">
+        <span class="serif" style="font-size:21px;font-weight:700">${oc.emoji} ${oc.name}의 목차</span>
+        <span class="row g12" style="flex-shrink:0">
+          ${x(!oc.virtual, `<button class="link-accent" style="color:var(--ink-2);padding:6px 0" ${act('startEditCat', oc.key)}>수정</button>`)}
+          <span style="font-size:13px;color:var(--accent);padding:6px 0" ${act('openCat', oc.key)}>전체 ${oc.count}편 →</span>
+        </span>
+      </div>`;
+    const panel = S.catAdd ? vCatAddPanel() : editing ? vCatEditPanel(oc) + toc : header + toc;
+    body = `<div class="stack g28">
+    <div class="stack g8"><div class="shelf">
+      ${each(lib, c => `<button class="spine${!S.catAdd && c.key === openKey ? ' on' : ''}" style="width:${38 + Math.round(c.count / maxC * 20)}px;height:${130 + Math.round(c.count / maxC * 120)}px;background:${catColor(c.hue)}" ${act('shelf', c.key)} aria-label="${c.name} ${c.count}편"><span class="nm">${c.name}</span><span class="ct">${c.count}</span></button>`)}
+      ${x(canAdd, `<button class="spine add${S.catAdd ? ' on' : ''}" ${act('openCatAdd')} aria-label="새 분야 추가"><span class="plus">+</span><span class="nm">분야 추가</span></button>`)}
+    </div><div class="shelf-board"></div>
+    <div class="shelf-hint">책을 누르면 목차가 열려요. ‘수정’으로 이름·삭제를, ＋ 책으로 새 분야를 꽂을 수 있어요.</div></div>
+    <div class="stack">${panel}</div></div>`;
+  }
   else if (S.libView === 'card') body = `<div class="cards">${each(lib, c => `<div class="cat-card" ${act('openCat', c.key)}>
       <div class="row between" style="align-items:baseline"><span class="serif" style="font-size:21px;font-weight:700">${c.emoji} ${c.name}</span><span style="font-size:13px;color:var(--ink-3)">${c.last}</span></div>
       <div class="serif" style="font-size:15px;color:var(--ink-2);line-height:1.55;min-height:46px">${esc(c.latest)}</div>
@@ -705,51 +778,64 @@ function vLibrary(cs) {
     <div class="seg">${each([['shelf', '책장'], ['card', '카드'], ['tree', '트리']], ([k, l]) => `<button class="${S.libView === k ? 'on' : ''}" ${act('libView', k)}>${l}</button>`)}</div>
   </div>
   ${body}
-  ${vCatManager()}
   ${vManage()}
 </section>`;
 }
 
-function vCatManager() {
-  const list = getCats();
-  const count = key => live().filter(n => n.cat === key).length;
-  const head = `<div class="row between" style="align-items:center">
-      <div class="label">분야 관리</div>
-      <button class="link-accent" ${act('toggleCatMgr')}>${S.catMgr ? '닫기' : '분야 추가·삭제'}</button>
-    </div>`;
-  if (!S.catMgr) return `<div class="cat-mgr">${head}<div style="font-size:13.5px;color:var(--ink-2);line-height:1.6">${list.map(c => `${c.emoji} ${c.name}`).join(' · ')}</div></div>`;
-  const rows = each(list, c => {
-    const n = count(c.key);
-    if (S.delCat === c.key) {
-      const others = list.filter(o => o.key !== c.key);
-      return `<div class="cat-mgr-row del">
-        <div style="font-size:14.5px;font-weight:600">${c.emoji} ${c.name} 분야를 지울까요?</div>
-        ${n ? `<div style="font-size:13px;color:var(--ink-2);line-height:1.55">이 분야의 글 ${n}편을 옮길 분야를 골라 주세요. 갈래와 태그는 그대로 따라가요.</div>
-        <div class="row g6 wrap">${each(others, o => `<button class="chip${S.delTarget === o.key ? ' on' : ''}" ${act('delTarget', o.key)}>${o.emoji} ${o.name}</button>`)}</div>`
-        : `<div style="font-size:13px;color:var(--ink-2)">이 분야에는 글이 없어요.</div>`}
-        <div class="row g8" style="justify-content:flex-end">
-          <button class="btn-o" style="min-height:40px;padding:8px 16px" ${act('cancelDeleteCat')}>취소</button>
-          <button class="btn xs" style="background:var(--warn)" ${act('deleteCat')}>${n ? '옮기고 삭제' : '삭제'}</button>
-        </div>
-      </div>`;
-    }
-    return `<div class="cat-mgr-row">
-      <span class="row g10"><span class="swatch" style="background:${catColor(c.hue)}"></span>${c.emoji} ${c.name}<span style="color:var(--ink-3);font-size:13px">${n}편</span></span>
-      <button class="btn-danger" style="min-height:40px;padding:6px 8px" aria-label="${c.name} 분야 삭제" ${act('askDeleteCat', c.key)} ${list.length <= 1 ? 'disabled' : ''}>삭제</button>
-    </div>`;
-  });
-  return `<div class="cat-mgr">
-    ${head}
-    <div style="font-size:12.5px;color:var(--ink-3);line-height:1.6">저장할 때 AI가 이 분야들 중에서 골라요. 갈래(세부 분류)는 글에 맞춰 저절로 자라요.</div>
-    <div class="stack">${rows}</div>
-    ${list.length < MAX_CATS ? `<div class="row g8 wrap" style="margin-top:4px">
+const catSqlHint = () => x(sync.session() && sync.catsSupported() === false, `<div class="notice caution" style="font-size:12.5px">분야 목록은 아직 이 기기에만 저장돼요. 다른 기기와 맞추려면 Supabase에서 <b>supabase/add-categories.sql</b>을 한 번 실행해 주세요.</div>`);
+const catErrLine = () => x(S.catErr, `<div style="font-size:13px;color:var(--warn-ink)">${esc(S.catErr)}</div>`);
+
+// 책장의 ＋ 책을 눌렀을 때: 새 분야 꽂기
+function vCatAddPanel() {
+  return `<div class="cat-panel">
+    <div class="serif" style="font-size:19px;font-weight:700">새 분야를 책장에 꽂아요</div>
+    <div style="font-size:13px;color:var(--ink-2);line-height:1.6">저장할 때 AI가 책장에 있는 분야 중에서 골라요. 갈래(세부 분류)는 글에 맞춰 저절로 자라요.</div>
+    <div class="row g8 wrap">
       <input class="field" style="flex:0 0 72px;text-align:center" maxlength="4" placeholder="📁" aria-label="분야 이모지" value="${esc(S.newCatEmoji)}" data-in="newCatEmoji">
-      <input class="field" style="min-width:140px" maxlength="10" placeholder="새 분야 이름 (예: 신앙, 여행)" aria-label="새 분야 이름" value="${esc(S.newCatName)}" data-in="newCatName" data-kd="newCatName">
-      <button class="btn sm" ${act('addCat')} ${S.newCatName.trim() ? '' : 'disabled'}>추가</button>
-    </div>` : `<div style="font-size:13px;color:var(--ink-3)">분야는 ${MAX_CATS}개까지 만들 수 있어요.</div>`}
-    ${x(S.catErr, `<div style="font-size:13px;color:var(--warn-ink)">${esc(S.catErr)}</div>`)}
-    ${x(sync.session() && sync.catsSupported() === false, `<div class="notice caution" style="font-size:12.5px">분야 목록은 아직 이 기기에만 저장돼요. 다른 기기와 맞추려면 Supabase에서 <b>supabase/add-categories.sql</b>을 한 번 실행해 주세요.</div>`)}
-    <button class="btn-t" style="align-self:flex-start;font-size:12.5px;color:var(--ink-3)" ${act('resetCats')}>기본 분야 6개로 되돌리기</button>
+      <input class="field" style="min-width:150px" maxlength="10" placeholder="분야 이름 (예: 신앙, 여행)" aria-label="새 분야 이름" value="${esc(S.newCatName)}" data-in="newCatName" data-kd="newCatName">
+    </div>
+    ${catErrLine()}
+    <div class="row between g8 wrap">
+      <button class="btn-t" style="font-size:12.5px;color:var(--ink-3)" ${act('resetCats')}>기본 분야 6개로 되돌리기</button>
+      <div class="row g8">
+        <button class="btn-o" style="min-height:44px;padding:10px 18px" ${act('closeCatAdd')}>취소</button>
+        <button class="btn sm" ${act('addCat')} ${S.newCatName.trim() ? '' : 'disabled'}>꽂기</button>
+      </div>
+    </div>
+    ${catSqlHint()}
+  </div>`;
+}
+
+// 고른 책의 '수정': 이름·이모지 바꾸기, 분야 삭제(글은 다른 분야로 옮김)
+function vCatEditPanel(oc) {
+  const list = getCats();
+  const n = live().filter(x2 => x2.cat === oc.key).length;
+  const del = S.delCat === oc.key ? `<div class="cat-del">
+      <div style="font-size:14.5px;font-weight:600">${oc.emoji} ${oc.name} 분야를 책장에서 뺄까요?</div>
+      ${n ? `<div style="font-size:13px;color:var(--ink-2);line-height:1.55">이 분야의 글 ${n}편을 옮길 분야를 골라 주세요. 갈래와 태그는 그대로 따라가요.</div>
+      <div class="row g6 wrap">${each(list.filter(o => o.key !== oc.key), o => `<button class="chip${S.delTarget === o.key ? ' on' : ''}" ${act('delTarget', o.key)}>${o.emoji} ${o.name}</button>`)}</div>`
+      : `<div style="font-size:13px;color:var(--ink-2)">이 분야에는 글이 없어요.</div>`}
+      <div class="row g8" style="justify-content:flex-end">
+        <button class="btn-o" style="min-height:40px;padding:8px 16px" ${act('cancelDeleteCat')}>그만두기</button>
+        <button class="btn xs" style="background:var(--warn)" ${act('deleteCat')}>${n ? '옮기고 삭제' : '삭제'}</button>
+      </div>
+    </div>` : '';
+  return `<div class="cat-panel" style="margin-bottom:14px">
+    <div class="row between" style="align-items:baseline"><div class="serif" style="font-size:19px;font-weight:700">분야 수정</div><span style="font-size:13px;color:var(--ink-3)">${n}편</span></div>
+    <div class="row g8 wrap">
+      <input class="field" style="flex:0 0 72px;text-align:center" maxlength="4" aria-label="분야 이모지" value="${esc(S.editCatEmoji)}" data-in="editCatEmoji">
+      <input class="field" style="min-width:150px" maxlength="10" aria-label="분야 이름" value="${esc(S.editCatName)}" data-in="editCatName" data-kd="editCatName">
+    </div>
+    ${catErrLine()}
+    <div class="row between g8 wrap">
+      <button class="btn-danger" style="padding:10px 4px" ${act('askDeleteCat', oc.key)} ${list.length <= 1 ? 'disabled' : ''}>이 분야 삭제</button>
+      <div class="row g8">
+        <button class="btn-o" style="min-height:44px;padding:10px 18px" ${act('cancelEditCat')}>취소</button>
+        <button class="btn sm" ${act('saveEditCat')} ${S.editCatName.trim() ? '' : 'disabled'}>저장</button>
+      </div>
+    </div>
+    ${del}
+    ${catSqlHint()}
   </div>`;
 }
 
@@ -818,7 +904,7 @@ function vDetail(cs) {
   <div class="stack g10">
     <div class="row g8 wrap" style="font-size:13.5px;color:var(--ink-2)"><span>${c.emoji} ${c.name} › ${esc(n.sub)}</span><span style="color:#B3AA9C">·</span><span>${fmt(n.date)}</span><button class="link-accent" style="padding-left:4px" ${act('toggleDetEdit')}>${S.detailEditing ? '닫기' : '분류 수정'}</button></div>
     ${x(S.detailEditing, vEditor(n, cs, true))}
-    <div class="row g10 wrap">${each(n.tags, t => `<span style="font-size:14px;color:var(--accent)">#${esc(t)}</span>`)}</div>
+    ${x(!S.bodyEditing, `<div class="row g10 wrap">${each(n.tags, t => `<span style="font-size:14px;color:var(--accent)">#${esc(t)}</span>`)}${x(!n.tags.length, `<span style="font-size:13px;color:var(--ink-3)">태그 없음</span>`)}</div>`)}
   </div>
   ${x(n.book, `<div class="row g16" style="border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:16px 0">
     <div class="book-shape lg"></div>
@@ -826,6 +912,15 @@ function vDetail(cs) {
   </div>`)}
   ${S.bodyEditing ? `<div class="stack g12">
     <textarea class="edit-body" data-in="bodyDraft" data-kd="bodyDraft" aria-label="글 수정">${esc(S.bodyDraft)}</textarea>
+    <div class="tag-edit">
+      <div class="label" style="letter-spacing:0.06em">태그</div>
+      <div class="row g6 wrap">
+        ${each(S.tagsDraft, t => `<button class="tag-chip" aria-label="태그 ${esc(t)} 지우기" ${act('removeTagDraft', t)}>#${esc(t)} <span>×</span></button>`)}
+        ${S.tagsDraft.length < 8 ? `<input class="dashed w" placeholder="+ 태그 추가" aria-label="태그 추가" value="${esc(S.newTagDraft)}" data-in="newTagDraft" data-kd="newTagDraft">
+        ${x(S.newTagDraft.trim(), `<button class="chip ink on" ${act('addTagDraft')}>추가</button>`)}` : ''}
+      </div>
+      <div style="font-size:12px;color:var(--ink-3)">×를 누르면 지워지고, 새 태그는 쓰고 Enter(또는 쉼표·띄어쓰기). 최대 8개.</div>
+    </div>
     <div class="row between g8 wrap">
       <button class="btn-danger" style="padding:10px 4px" ${act('deleteNote')}>글 삭제</button>
       <div class="row g8"><button class="btn-o" style="min-height:46px;padding:12px 18px" ${act('cancelBodyEdit')}>취소</button>${x(S.bodyDraft.trim(), `<button class="btn" style="min-height:46px;padding:12px 24px;font-size:14.5px" ${act('saveBody')}>수정 저장</button>`)}</div>
