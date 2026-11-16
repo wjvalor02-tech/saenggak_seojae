@@ -514,12 +514,12 @@ const bookLine = b => b ? `『${b.title}』${bookMeta(b) ? ' ' + bookMeta(b) : '
 const plainDraft = md => String(md || '').split('\n').map(l => l.replace(/^#+\s*/, '').replace(/^[-*]\s+/, '• ').replace(/\*\*/g, '')).join('\n');
 
 function exportXlsx() {
-  const notes = sorted();
+  const notes = sorted().reverse(); // 과거 → 최근 순(아래로 갈수록 최근)
   const noteRows = notes.map(n => {
     const c = catOf(n.cat);
     return [n.date, DOW_KO[pd(n.date).getDay()], c.name, n.sub, tagLine(n), titleOf(n.body), n.body, bookLine(n.book), n.edited || '', n.aiPending ? '간단 분류' : 'AI'];
   });
-  const weekRows = reports().map(r => [
+  const weekRows = reports().reverse().map(r => [
     weekLabel(r.date) + (r.final ? '' : ' (진행 중)'),
     r.overview || '',
     (r.connections || []).map(c => `[${c.title}] ${c.insight}`).join('\n\n'),
@@ -544,7 +544,7 @@ function exportXlsx() {
 }
 
 function exportDocx() {
-  const notes = sorted();
+  const notes = sorted().reverse(); // 과거 → 최근 순(아래로 갈수록 최근)
   const blocks = [
     { type: 'title', text: '생각서재 기록' },
     { type: 'meta', text: `${fmtPlain(todayS())} 내보냄 · 글 ${notes.length}편` },
@@ -562,7 +562,7 @@ function exportDocx() {
       n.body.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).forEach(p => blocks.push({ type: 'p', text: p }));
     }
   }
-  const rs = reports();
+  const rs = reports().reverse();
   if (rs.length) {
     blocks.push({ type: 'h1', text: '주간 돌아보기' });
     for (const r of rs) {
