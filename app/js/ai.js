@@ -51,12 +51,16 @@ async function call(task, input, timeoutMs = 18000) {
     ai.setError('AI 응답을 읽지 못했어요.');
     return null;
   } catch (e) {
-    ai.setError(e && e.name === 'AbortError' ? 'AI 응답이 너무 늦어 기다리지 못했어요.' : 'AI 서버에 연결하지 못했어요.');
+    ai.setError(e && e.name === 'AbortError' ? `${TASK_NAME[task] || 'AI'} 응답을 ${Math.round(timeoutMs / 1000)}초 기다렸지만 오지 않았어요.` : 'AI 서버에 연결하지 못했어요.');
     return null;
   }
 }
+const TASK_NAME = { classify: '글 분류', book: '책 찾기', check: 'AI 검토', ask: '물어보기', weekly: '주간 돌아보기' };
 function explain(r) {
   const d = String(r.detail || '');
+  const task = TASK_NAME[r.task] || TASK_NAME[d.split(':')[0]] || '';
+  const sec = (d.match(/(\d+)초/) || [])[1];
+  if (/timeout/.test(d)) return `${task ? task + ' 중 ' : ''}AI가 ${sec ? sec + '초 안에 ' : '제시간에 '}답하지 않았어요. 잠시 뒤 다시 정리할게요.`;
   if (r.status === 401) return '로그인이 만료돼 AI를 쓰지 못했어요. 다시 로그인해 주세요.';
   if (r.status === 404) return 'AI 서버 함수(ai)가 Supabase에 배포돼 있지 않아요.';
   if (r.status === 429) return d || 'AI 사용 한도를 넘었어요. 내일 다시 정리할게요.';
@@ -86,7 +90,7 @@ export const ai = {
   async _classify(text, cats, book, hints) {
     const taxonomy = cats.map(c => `${c.key}(${c.name}): ${c.subs.map(s => s.name).join(', ') || '(아직 없음)'}`).join('\n');
     const bookLine = book ? `[이 글은 책 『${book.title}』${book.author ? `(${book.author})` : ''}에 관한 기록]\n` : '';
-    const r = await call('classify', { text: bookLine + text, taxonomy, keys: cats.map(c => c.key), vocab: hints.vocab || '', examples: hints.examples || '' });
+    const r = await call('classify', { text: bookLine + text, taxonomy, keys: cats.map(c => c.key), vocab: hints.vocab || '', examples: hints.examples || '' }, 30000);
     if (r) {
       const j = r.result;
       if (cats.find(c => c.key === j.cat) && j.sub && Array.isArray(j.tags)) {
@@ -100,6 +104,11 @@ export const ai = {
       }
       ai.setError('AI가 알 수 없는 분야로 답해 간단히 분류했어요.');
     }
+    return this.guess(text, cats, book);
+  },
+
+  // AI 없이 바로 내는 간단 분류(AI가 늦거나 실패할 때). aiPending이 붙어 나중에 AI로 다시 정리된다
+  guess(text, cats, book) {
     const h = heuristic(text);
     if (book && h.cat !== 'research' && h.cat !== 'class') { h.cat = 'reading'; h.sub = /역사/.test(text) ? '역사' : '교육'; }
     // 사용자가 지운 기본 분야로 분류됐으면, 이름이 같은 분야나 '일상', 그것도 없으면 첫 분야로
@@ -108,11 +117,11 @@ export const ai = {
       const alt = cats.find(c => c.name === want) || cats.find(c => c.key === 'daily') || cats[0];
       h.cat = alt.key; h.sub = h.sub || '생각';
     }
-    return { ...h, aiPending: true };
+    return { ...h, aiPending: true, summary: titleOf(text) };
   },
 
   async findBook(text, cand) {
-    const r = await call('book', { text: text.slice(0, 800), cand });
+    const r = await call('book', { text: text.slice(0, 800), cand }, 25000);
     if (!r) return undefined; // 사용 불가 / 실패
     const b = r.result.book;
     if (!b || !b.title) return null;
@@ -122,7 +131,7 @@ export const ai = {
   },
 
   async factCheck(text) {
-    const r = await call('check', { text: text.slice(0, 3000) }, 25000);
+    const r = await call('check', { text: text.slice(0, 3000) }, 45000);
     if (!r) return null;
     return (r.result.checks || []).filter(c => c && c.issue).slice(0, 5).map(c => ({
       quote: String(c.quote || ''), level: c.level === '오류 가능' ? '오류 가능' : '확인 권장', issue: String(c.issue), note: String(c.note || ''),
@@ -131,7 +140,7 @@ export const ai = {
 
   async ask(q, candidates) {
     const ctx = candidates.map(n => `[${n.id}] ${n.date} | ${catOf(n.cat).name}›${n.sub} | ${titleOf(n.body)} | ${n.body.slice(0, 180).replace(/\n/g, ' ')}`).join('\n');
-    const r = await call('ask', { q, ctx });
+    const r = await call('ask', { q, ctx }, 33000);
     if (!r || !r.result.answer) return null;
     return { text: String(r.result.answer), ids: (r.result.ids || []).map(String) };
   },
@@ -140,7 +149,7 @@ export const ai = {
   async weekly(weekNotes, pastNotes, range) {
     const week = weekNotes.map(n => `[${n.id}] ${n.date} | ${catOf(n.cat).name}›${n.sub} | ${n.tags.map(t => '#' + t).join(' ')} | ${n.body.slice(0, 1200).replace(/\n+/g, ' ')}`).join('\n');
     const past = pastNotes.map(n => `[${n.id}] ${n.date} | ${catOf(n.cat).name} | ${titleOf(n.body)} | ${n.tags.map(t => '#' + t).join(' ')}`).join('\n');
-    const r = await call('weekly', { week, past, range }, 100000);
+    const r = await call('weekly', { week, past, range }, 145000);
     if (!r) return null;
     const j = r.result;
     const ids = new Set([...weekNotes, ...pastNotes].map(n => n.id));

@@ -36,20 +36,20 @@ ${vocab ? `\n[이 사용자가 이미 쓰는 태그] (같은 뜻이면 반드시
    - 나쁜 예: 오늘, 생각, 수업(분야 이름과 같은 말), 했다, 좋았다, 날짜·감정어·동사·형용사
    - 이미 쓰는 태그 중 뜻이 같은 것이 있으면 새로 만들지 말고 그것을 쓴다.
 JSON만 출력: {"cat":"","sub":"","tags":[]}`;
-    return completeJSON(prompt, (j): j is unknown => isObj(j) && keys.includes(String(j.cat)) && !!j.sub && Array.isArray(j.tags), 15000, { effort: "low" });
+    return completeJSON(prompt, (j): j is unknown => isObj(j) && keys.includes(String(j.cat)) && !!j.sub && Array.isArray(j.tags), 25000, { effort: "low" });
   },
   book(input) {
     const cand = input.cand ? str(input.cand, 80) : "";
     const prompt = `다음 글에서 사용자가 읽고 있거나 언급한 책 한 권을 찾아 서지 정보를 알려줘.${cand ? ` 사용자가 표시한 제목: "${cand}".` : ""}\n글:\n"""${str(input.text, 800)}"""\n\n특정 책이 없거나 실제 존재하는 책인지 확신할 수 없으면 {"book":null}. 한국어판이 있으면 한국어판 기준(번역자·출판사·출간연도). 원서 출간연도는 originalYear. JSON만 출력: {"book":{"title":"","author":"","translator":"","publisher":"","year":"","originalYear":""}}`;
-    return completeJSON(prompt, (j): j is unknown => isObj(j) && "book" in j, 15000, { effort: "low" });
+    return completeJSON(prompt, (j): j is unknown => isObj(j) && "book" in j, 20000, { effort: "low" });
   },
   check(input) {
     const prompt = `너는 역사 교사이자 교육방법 전공 대학원생의 개인 메모를 읽는 꼼꼼한 검토자다. 아래 글에서 사실관계를 확인해 볼 필요가 있는 부분(연도·인물·사건·수치·인용문·연구 결과·학자 이름·책 정보 등)을 찾아라. 개인 경험·감정·의견·계획은 검토 대상이 아니다. 틀렸다고 확신할 때만 level을 "오류 가능"으로, 나머지는 "확인 권장"으로 한다. 사소한 것은 빼고 최대 5개. 없으면 빈 배열.\n글:\n"""${str(input.text, 3000)}"""\n\nJSON만 출력: {"checks":[{"quote":"글에서 해당 부분을 그대로 30자 이내로","level":"오류 가능 또는 확인 권장","issue":"무엇을 확인해야 하는지 한 문장","note":"알고 있는 사실이나 확인할 방법 한 문장"}]}`;
-    return completeJSON(prompt, (j): j is unknown => isObj(j) && Array.isArray(j.checks), 22000, { effort: "medium" });
+    return completeJSON(prompt, (j): j is unknown => isObj(j) && Array.isArray(j.checks), 40000, { effort: "medium" });
   },
   ask(input) {
     const prompt = `아래는 한 사람의 생각 기록이다.\n${str(input.ctx, 16000)}\n\n질문: "${str(input.q, 300)}"\n\n기록에 근거해 2~3문장으로, 본인에게 말하듯 존댓말로 답한다. 날짜를 '11월 10일'처럼 언급한다. 관련 기록 id를 최대 3개. JSON만 출력: {"answer":"","ids":[]}`;
-    return completeJSON(prompt, (j): j is unknown => isObj(j) && typeof j.answer === "string", 18000, { effort: "low" });
+    return completeJSON(prompt, (j): j is unknown => isObj(j) && typeof j.answer === "string", 28000, { effort: "low" });
   },
 
   // 주간 검토: 그 주의 생각 사이 연결고리·통찰 + 블로그 글감 하나
@@ -73,7 +73,7 @@ ${input.past ? `\n[참고: 지난 기록 제목들] (이번 주 생각과 이어
 - 공유할 만한 것이 정말 없으면 blog는 null.
 JSON만 출력:
 {"overview":"","connections":[{"ids":[],"title":"","insight":""}],"blog":{"title":"","hook":"","outline":[],"draft":"","tags":[],"sourceIds":[]}}`;
-    return completeJSON(prompt, (j): j is unknown => isObj(j) && typeof j.overview === "string" && Array.isArray(j.connections), 90000, { effort: "medium", maxTokens: 8000 });
+    return completeJSON(prompt, (j): j is unknown => isObj(j) && typeof j.overview === "string" && Array.isArray(j.connections), 130000, { effort: "medium", maxTokens: 6000 });
   },
 };
 
@@ -105,6 +105,6 @@ Deno.serve(async (req) => {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(body.task, msg);
     // 앱이 원인을 보여 줄 수 있게 짧은 이유를 함께 돌려준다(키 값 같은 비밀은 들어가지 않음)
-    return json({ error: "ai_failed", detail: msg.slice(0, 220), provider: provider() }, 502);
+    return json({ error: "ai_failed", task: body.task, detail: `${body.task}: ${msg}`.slice(0, 240), provider: provider() }, 502);
   }
 });

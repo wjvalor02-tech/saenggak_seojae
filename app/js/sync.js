@@ -177,7 +177,7 @@ export const sync = {
     try {
       const r = await authFetch('/functions/v1/ai', { method: 'POST', body: JSON.stringify(body), signal: ctl.signal });
       // 실패해도 이유를 돌려줘서 화면에 보여 줄 수 있게 한다(예전엔 조용히 간단 분류로만 넘어갔음)
-      if (!r.ok) { const j = await r.json().catch(() => ({})); return { failed: true, status: r.status, error: j.error, detail: j.detail || j.message || '' }; }
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return { failed: true, status: r.status, error: j.error, task: j.task || body.task, detail: j.detail || j.message || '' }; }
       return await r.json();
     } finally { clearTimeout(t); }
   },

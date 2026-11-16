@@ -364,17 +364,40 @@ async function save() {
   await writeNote(draftNote);
 
   const before = cats();
-  const r = await ai.classify(text, before, book, classifyHints(id));
-  const c = before.find(x => x.key === r.cat) || before.find(x => x.key === 'daily') || before[0];
-  const isNew = !c.subs.find(s => s.name === r.sub);
-  addBorn(c.key, r.sub);
-  const cur = S.notes.find(n => n.id === id) || draftNote;
-  const { aiPending: _p, ...base } = cur;
-  await writeNote({ ...base, cat: c.key, sub: r.sub, tags: r.tags, summary: r.summary, ...(r.aiPending ? { aiPending: true } : {}), ...(r.aiProvider ? { aiProvider: r.aiProvider } : {}) });
-  // AI가 실패했으면 이유를 함께 알린다(예전엔 조용히 간단 분류만 해서 원인을 알 수 없었다)
-  const note = r.aiPending && sync.configured() && sync.session() ? `간단히 분류했어요. ${ai.lastError || 'AI 연결이 잠시 어려워요.'} 연결되면 다시 정리할게요.` : '';
-  set({ phase: 'done', resNew: isNew, resNote: note });
+  const aiP = ai.classify(text, before, book, classifyHints(id));
+  // 분류 결과를 글에 적용. late=true(AI가 늦게 도착)일 때 사용자가 그새 분류·태그를 고쳤으면 건드리지 않는다
+  const apply = async (r, late) => {
+    const cur = S.notes.find(n => n.id === id);
+    if (!cur || cur.deletedAt || (late && cur.userSorted)) return null;
+    // '새 갈래'인지는 방금 쓴 이 글을 뺀 나머지 글들 기준으로 판단한다
+    const cs = deriveCats(live().filter(n => n.id !== id), S.subBorn);
+    const c = cs.find(x => x.key === r.cat) || cs.find(x => x.key === 'daily') || cs[0];
+    const isNew = !c.subs.some(s => s.name === r.sub);
+    addBorn(c.key, r.sub);
+    const { aiPending: _p, ...base } = cur;
+    await writeNote({ ...base, cat: c.key, sub: r.sub, tags: r.tags, summary: r.summary, ...(r.aiPending ? { aiPending: true } : {}), ...(r.aiProvider ? { aiProvider: r.aiProvider } : {}) });
+    return isNew;
+  };
+  const failNote = () => (sync.configured() && sync.session() ? `간단히 분류했어요. ${ai.lastError || 'AI 연결이 잠시 어려워요.'} 연결되면 다시 정리할게요.` : '');
+
+  // 시트는 8초까지만 기다린다. AI가 그 안에 오면 바로 보여 주고,
+  const quick = await Promise.race([aiP, new Promise(res => setTimeout(() => res(null), 8000))]);
+  if (quick) {
+    const isNew = await apply(quick, false);
+    // AI가 실패했으면 이유를 함께 알린다(예전엔 조용히 간단 분류만 해서 원인을 알 수 없었다)
+    set({ phase: 'done', resNew: !!isNew, resNote: quick.aiPending ? failNote() : '' });
+    arm();
+    return;
+  }
+  // 늦으면 간단 분류로 먼저 보여 주고, AI 결과가 도착하면 저절로 바꾼다(다음 글을 바로 쓸 수 있게)
+  const isNew = await apply(ai.guess(text, before, book), false);
+  set({ phase: 'done', resNew: !!isNew, resNote: 'AI가 아직 정리하는 중이에요. 끝나면 분류와 태그가 저절로 바뀌어요.' });
   arm();
+  const r = await aiP;
+  const here = () => S.resId === id && S.phase === 'done';
+  if (r.aiPending) { if (here()) set({ resNote: failNote() }); return; }
+  const changed = await apply(r, true);
+  if (changed !== null && here()) set({ resNew: changed, resNote: 'AI가 정리를 마쳤어요.' });
 }
 function arm() { clearTimeout(timer); timer = setTimeout(() => { if (!S.editing) dismiss(); }, 4000); }
 function dismiss() { clearTimeout(timer); set({ phase: 'idle', editing: false, newTag: '', newSub: '' }); if (S.screen === 'write') focusDraft(); }
