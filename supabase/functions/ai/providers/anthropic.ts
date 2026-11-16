@@ -10,15 +10,15 @@ let client: Anthropic | null = null;
 export async function anthropicComplete(prompt: string, opts: CompleteOpts): Promise<string> {
   const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY missing");
-  client ??= new Anthropic({ apiKey, timeout: opts.timeoutMs, maxRetries: 1 });
+  client ??= new Anthropic({ apiKey, maxRetries: 1 });
   const response = await client.messages.create({
     model: Deno.env.get("AI_MODEL") || DEFAULT_MODEL,
-    max_tokens: 4000,
-    // 분류·요약 같은 짧은 작업이라 생각 깊이는 낮게
-    output_config: { effort: "low" },
+    max_tokens: opts.maxTokens ?? 4000,
+    // 분류는 low, 주간 검토·글감은 medium
+    output_config: { effort: opts.effort ?? "low" },
     system: opts.json ? "응답은 설명 없이 JSON 객체 하나만 출력한다." : undefined,
     messages: [{ role: "user", content: prompt }],
-  });
+  }, { timeout: opts.timeoutMs });
   if (response.stop_reason === "refusal") throw new Error("refusal");
   return response.content.map((b) => (b.type === "text" ? b.text : "")).join("");
 }

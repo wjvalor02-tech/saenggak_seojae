@@ -2,7 +2,7 @@
 import { geminiComplete } from "./providers/gemini.ts";
 import { anthropicComplete } from "./providers/anthropic.ts";
 
-export type CompleteOpts = { json?: boolean; timeoutMs: number };
+export type CompleteOpts = { json?: boolean; timeoutMs: number; effort?: "low" | "medium" | "high"; maxTokens?: number };
 export type Provider = "gemini" | "anthropic";
 
 export const provider = (): Provider => (Deno.env.get("AI_PROVIDER") === "anthropic" ? "anthropic" : "gemini");
@@ -12,11 +12,16 @@ export async function complete(prompt: string, opts: CompleteOpts): Promise<stri
 }
 
 // 응답에서 {...}만 뽑아 파싱. 검증 실패 시 1회 재시도.
-export async function completeJSON<T>(prompt: string, validate: (j: unknown) => j is T, timeoutMs = 18000): Promise<T> {
+export async function completeJSON<T>(
+  prompt: string,
+  validate: (j: unknown) => j is T,
+  timeoutMs = 18000,
+  extra: Partial<CompleteOpts> = {},
+): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const raw = await complete(prompt, { json: true, timeoutMs });
+      const raw = await complete(prompt, { json: true, timeoutMs, ...extra });
       const m = raw.match(/\{[\s\S]*\}/);
       if (!m) throw new Error("no json");
       const j = JSON.parse(m[0]);
@@ -24,7 +29,9 @@ export async function completeJSON<T>(prompt: string, validate: (j: unknown) => 
       throw new Error("schema");
     } catch (e) {
       lastErr = e;
-      if (e instanceof Error && e.message === "rate_limited") break; // 한도 초과면 재시도해도 소용없음
+      const msg = e instanceof Error ? e.message : String(e);
+      // 한도 초과·키 없음·모델 없음은 다시 해도 소용없다
+      if (/rate_limited|missing|gemini 4\d\d|refusal/.test(msg)) break;
     }
   }
   throw lastErr;

@@ -2,7 +2,7 @@ import { morph, esc } from './morph.js';
 import { getCats, setCats, nextHue, MAX_CATS, DEFAULT_CATS, catOf, catColor, todayS, pd, daysAgo, fmt, fmtPlain, shortDate, rel, todayLabel, uid, bookMeta, DOW } from './util.js';
 import { db, deriveCats, normalizeImport, clean, requestPersist } from './store.js';
 import { sync } from './sync.js';
-import { ai, nlScore, isShort, oneLine } from './ai.js';
+import { ai, nlScore, titleOf } from './ai.js';
 import { layoutNet } from './net.js';
 
 // ───────────────────────── 상태 ─────────────────────────
@@ -22,15 +22,18 @@ const S = {
   catsAt: null, catsDirty: false, catAdd: false, catEdit: null, editCatName: '', editCatEmoji: '',
   newCatName: '', newCatEmoji: '', catErr: null, delCat: null, delTarget: null,
   tagsDraft: [], newTagDraft: '',
+  aiError: null, reclassBusy: false,
+  weeklyBusy: null, openReport: null, blogOpen: null,
 };
 const root = document.getElementById('app');
 let timer = null, bookTimer = null, bookToken = null, checkToken = null, lastKey = null, lastLen = 0, rec = null, toastTimer = null, syncTimer = null;
 let ta = null;
 
-const live = () => S.notes.filter(n => !n.deletedAt);
+// kind가 있는 행(주간 돌아보기 등)은 글이 아니므로 목록에서 뺀다
+const live = () => S.notes.filter(n => !n.deletedAt && !n.kind);
 const sorted = () => live().sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || '').localeCompare(a.createdAt || '') || b.id.localeCompare(a.id));
 const cats = () => deriveCats(live(), S.subBorn);
-const findNote = id => S.notes.find(n => n.id === id && !n.deletedAt);
+const findNote = id => S.notes.find(n => n.id === id && !n.deletedAt && !n.kind);
 const monthKey = () => todayS().slice(0, 7);
 
 let queued = false;
@@ -156,27 +159,123 @@ const syncApi = {
 };
 async function runSync() {
   await sync.run(syncApi);
-  reclassifyPending();
+  await reclassifyPending();
+  maybeWeekly();
 }
 
 // AI가 실패해 휴리스틱으로 분류된 글을 나중에 다시 정리한다
 let reclassifying = false;
-async function reclassifyPending() {
-  if (reclassifying || !ai.available()) return;
-  const pending = live().filter(n => n.aiPending && !n.userSorted).slice(0, 5);
-  if (!pending.length) return;
+// 분류 정확도를 높이는 힌트: ① 이미 쓰는 태그(같은 뜻이면 같은 표기를 다시 쓰게) ② 사용자가 직접 고친 분류(이 사람의 기준)
+function classifyHints(excludeId) {
+  const count = {};
+  live().forEach(n => { if (!n.aiPending || n.userSorted) n.tags.forEach(t => { count[t] = (count[t] || 0) + 1; }); });
+  const vocab = Object.entries(count).sort((a, b) => b[1] - a[1]).slice(0, 50).map(([t]) => t).join(', ');
+  const examples = live().filter(n => n.userSorted && n.id !== excludeId)
+    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, 6)
+    .map(n => `- "${n.body.replace(/\s+/g, ' ').slice(0, 140)}" → ${n.cat}(${catOf(n.cat).name})›${n.sub} ${n.tags.map(t => '#' + t).join(' ')}`).join('\n');
+  return { vocab, examples };
+}
+
+async function reclassifyPending(limit = 5) {
+  if (reclassifying || !ai.available()) return 0;
+  const pending = live().filter(n => n.aiPending && !n.userSorted).slice(0, limit);
+  if (!pending.length) return 0;
   reclassifying = true;
+  let done = 0;
   try {
     for (const n of pending) {
-      const r = await ai.classify(n.body, cats(), n.book);
+      const r = await ai.classify(n.body, cats(), n.book, classifyHints(n.id));
       if (r.aiPending) break; // 아직 AI가 안 됨
       const cur = findNote(n.id);
       if (!cur || cur.userSorted) continue;
       addBorn(r.cat, r.sub);
       const { aiPending, ...rest } = cur;
-      writeNote({ ...rest, cat: r.cat, sub: r.sub, tags: r.tags, summary: r.summary, aiProvider: r.aiProvider });
+      await writeNote({ ...rest, cat: r.cat, sub: r.sub, tags: r.tags, summary: r.summary, aiProvider: r.aiProvider });
+      done++;
     }
   } finally { reclassifying = false; }
+  return done;
+}
+// 서재 > 내 기록 관리의 'AI로 다시 정리' 버튼: 간단 분류된 글을 모두 다시 정리
+async function reclassifyAll() {
+  if (!ai.available()) { toast(ai.lastError || '로그인하고 온라인일 때 쓸 수 있어요.'); return; }
+  set({ reclassBusy: true });
+  let total = 0;
+  for (let i = 0; i < 40; i++) { const d = await reclassifyPending(5); total += d; if (d < 5) break; }
+  set({ reclassBusy: false });
+  toast(total ? `글 ${total}편을 AI로 다시 정리했어요.` : (ai.lastError || '다시 정리할 글이 없어요.'));
+}
+
+// ───────────────────────── 주간 돌아보기 ─────────────────────────
+// 매주 한 번(새 주에 처음 앱을 열 때) 지난주 기록을 AI가 읽고
+// ① 생각 사이의 연결고리와 통찰 ② 블로그에 올릴 글감 하나를 만든다.
+// 결과는 글과 같은 표에 kind:'weekly' 행으로 저장돼 다른 기기와도 동기화된다(주마다 id가 같아 중복되지 않음).
+const ds = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const addDays = (s, k) => { const d = pd(s); d.setDate(d.getDate() + k); return ds(d); };
+const mondayOf = s => { const d = pd(s); const k = (d.getDay() + 6) % 7; d.setDate(d.getDate() - k); return ds(d); };
+const weekLabel = mon => { const a = pd(mon), b = pd(addDays(mon, 6)); return `${a.getMonth() + 1}월 ${a.getDate()}일 – ${a.getMonth() === b.getMonth() ? '' : (b.getMonth() + 1) + '월 '}${b.getDate()}일`; };
+const reports = () => S.notes.filter(n => n.kind === 'weekly' && !n.deletedAt).sort((a, b) => b.date.localeCompare(a.date));
+const weekNotes = mon => live().filter(n => n.date >= mon && n.date <= addDays(mon, 6)).sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt || '').localeCompare(b.createdAt || ''));
+
+async function makeWeekly(mon, { manual = false } = {}) {
+  if (S.weeklyBusy) return;
+  const notes = weekNotes(mon);
+  if (!notes.length) { if (manual) toast('이 주에는 아직 기록이 없어요.'); return; }
+  if (!ai.available()) { if (manual) toast(ai.lastError || '로그인하고 온라인일 때 만들 수 있어요.'); return; }
+  set({ weeklyBusy: mon });
+  try {
+    // 지난 기록 제목도 조금 넘겨서 이번 주 생각이 예전 생각과 이어지는지 볼 수 있게 한다
+    const past = live().filter(n => n.date < mon).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 50);
+    const r = await ai.weekly(notes.slice(-40), past, weekLabel(mon));
+    if (!r) { if (manual) toast(ai.lastError || '돌아보기를 만들지 못했어요. 잠시 후 다시 해 주세요.'); return; }
+    const final = todayS() > addDays(mon, 6); // 그 주가 끝난 뒤 만든 것인지
+    const id = 'wk-' + mon;
+    const prev = S.notes.find(n => n.id === id);
+    await writeNote({
+      id, kind: 'weekly', date: mon, weekEnd: addDays(mon, 6), final,
+      // 예전 버전 앱이 이 행을 글로 착각해도 깨지지 않도록 기본 필드를 채워 둔다
+      cat: 'daily', sub: '', tags: [], summary: '', body: '',
+      noteIds: notes.map(n => n.id), noteCount: notes.length,
+      overview: r.overview, connections: r.connections, blog: r.blog, provider: r.provider,
+      generatedAt: new Date().toISOString(), seen: S.screen === 'timeline',
+      createdAt: (prev && prev.createdAt) || new Date().toISOString(),
+    });
+    set({ openReport: id });
+    if (!manual && S.screen !== 'timeline') toast(`${weekLabel(mon)} 돌아보기가 도착했어요. 흐름 탭에서 볼 수 있어요.`);
+  } finally { set({ weeklyBusy: null }); }
+}
+
+// 새 주가 되면 지난주 돌아보기를 자동으로 만든다(동기화가 끝난 뒤 → 다른 기기가 이미 만들었으면 그걸 쓴다)
+let weeklyChecked = false;
+async function maybeWeekly() {
+  if (weeklyChecked || !ai.available()) return;
+  const lastMon = addDays(mondayOf(todayS()), -7);
+  const existing = S.notes.find(n => n.id === 'wk-' + lastMon && !n.deletedAt);
+  if (existing && existing.final) { weeklyChecked = true; return; }
+  if (!weekNotes(lastMon).length) { weeklyChecked = true; return; }
+  // 실패해도 계속 다시 부르지 않도록 6시간에 한 번만 시도
+  const tried = await db.get('weeklyTried').catch(() => null);
+  if (tried && tried.mon === lastMon && Date.now() - tried.at < 6 * 3600e3) return;
+  weeklyChecked = true;
+  await db.set('weeklyTried', { mon: lastMon, at: Date.now() });
+  await makeWeekly(lastMon);
+}
+
+// 처음엔 가장 최근 돌아보기를 펼쳐 둔다. 'none'이면 모두 접힘.
+const openReportId = () => (S.openReport === null ? (reports()[0] || {}).id : S.openReport);
+
+function blogMarkdown(b) {
+  return [`# ${b.title}`, '', b.hook, '', b.draft, '', b.tags.length ? b.tags.map(t => '#' + t).join(' ') : ''].join('\n').trim() + '\n';
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch (e) {
+    // 권한이 없거나 오래된 브라우저: 임시 입력칸으로 복사
+    const t = document.createElement('textarea'); t.value = text; t.style.position = 'fixed'; t.style.opacity = '0';
+    document.body.appendChild(t); t.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (x2) { /* 무시 */ }
+    t.remove(); return ok;
+  }
 }
 
 // ───────────────────────── 화면 이동 ─────────────────────────
@@ -187,6 +286,11 @@ function go(screen) {
   history.replaceState(snapshot(), '');
   window.scrollTo(0, 0);
   if (screen === 'write') focusDraft();
+  // 흐름 탭을 열면 새 돌아보기를 '읽음'으로(탭의 점이 사라짐). 가장 최근 것은 펼쳐 둔다.
+  if (screen === 'timeline') {
+    const unseen = reports().filter(r => !r.seen);
+    if (unseen.length) { set({ openReport: unseen[0].id }); unseen.forEach(r => patch(r.id, { seen: true })); }
+  }
 }
 function push(p) {
   history.replaceState({ ...snapshot(), scrollY: window.scrollY }, '');
@@ -255,19 +359,20 @@ async function save() {
   // 1) 일단 휴리스틱 결과로 바로 저장(유실 방지) → 2) AI 결과로 덮어쓴다
   const id = uid();
   const now = new Date().toISOString();
-  const draftNote = { id, date: todayS(), cat: 'daily', sub: '생각', tags: [], summary: text.slice(0, 30), body: text, aiPending: true, createdAt: now, ...(book ? { book } : {}), ...(checks ? { checks } : {}) };
+  const draftNote = { id, date: todayS(), cat: 'daily', sub: '생각', tags: [], summary: titleOf(text), body: text, aiPending: true, createdAt: now, ...(book ? { book } : {}), ...(checks ? { checks } : {}) };
   set({ phase: 'classifying', draft: '', editing: false, book: null, bookStatus: 'idle', bookDismissed: false, checks: null, checkStatus: 'idle', resId: id, resNote: '' });
   await writeNote(draftNote);
 
   const before = cats();
-  const r = await ai.classify(text, before, book);
+  const r = await ai.classify(text, before, book, classifyHints(id));
   const c = before.find(x => x.key === r.cat) || before.find(x => x.key === 'daily') || before[0];
   const isNew = !c.subs.find(s => s.name === r.sub);
   addBorn(c.key, r.sub);
   const cur = S.notes.find(n => n.id === id) || draftNote;
   const { aiPending: _p, ...base } = cur;
   await writeNote({ ...base, cat: c.key, sub: r.sub, tags: r.tags, summary: r.summary, ...(r.aiPending ? { aiPending: true } : {}), ...(r.aiProvider ? { aiProvider: r.aiProvider } : {}) });
-  const note = r.aiPending && sync.configured() && sync.session() ? 'AI 연결이 잠시 어려워 간단히 분류했어요. 곧 다시 정리할게요.' : '';
+  // AI가 실패했으면 이유를 함께 알린다(예전엔 조용히 간단 분류만 해서 원인을 알 수 없었다)
+  const note = r.aiPending && sync.configured() && sync.session() ? `간단히 분류했어요. ${ai.lastError || 'AI 연결이 잠시 어려워요.'} 연결되면 다시 정리할게요.` : '';
   set({ phase: 'done', resNew: isNew, resNote: note });
   arm();
 }
@@ -334,8 +439,8 @@ function saveBody(id) {
   const tagsChanged = tags.join('\u0001') !== n.tags.join('\u0001');
   writeNote({
     ...n, body, tags,
-    // 짧은 글은 요약 대신 글 자체가 제목 역할을 하므로 함께 바꾼다
-    ...(isShort(body) ? { summary: oneLine(body) } : {}),
+    // 목록 제목은 AI 요약 대신 글의 첫 문장(본문이 바뀌면 같이 바뀜)
+    summary: titleOf(body),
     ...(body !== n.body || tagsChanged ? { edited: todayS() } : {}),
     // 직접 고친 태그는 나중에 AI가 다시 정리할 때 덮어쓰지 않는다
     ...(tagsChanged ? { userSorted: true } : {}),
@@ -366,13 +471,13 @@ async function ask() {
   }
   await new Promise(r => setTimeout(r, 500));
   const hits = nlScore(q, all).slice(0, 3);
-  const text = hits.length ? `${fmtPlain(hits[0].date)}에 “${hits[0].summary}”라고 남겼어요.${hits[1] ? ` 비슷한 생각은 ${fmtPlain(hits[1].date)}에도 있었어요.` : ''}` : '관련된 기록을 찾지 못했어요.';
+  const text = hits.length ? `${fmtPlain(hits[0].date)}에 “${titleOf(hits[0].body)}”라고 남겼어요.${hits[1] ? ` 비슷한 생각은 ${fmtPlain(hits[1].date)}에도 있었어요.` : ''}` : '관련된 기록을 찾지 못했어요.';
   set({ aiLoading: false, answer: { text, ids: hits.map(n => n.id) } });
 }
 
 // ───────────────────────── 백업 ─────────────────────────
 function exportData() {
-  const payload = { app: '생각서재', version: 1, saved: new Date().toISOString(), cats: cats(), notes: sorted().map(clean), subBorn: S.subBorn };
+  const payload = { app: '생각서재', version: 1, saved: new Date().toISOString(), cats: cats(), notes: sorted().map(clean), subBorn: S.subBorn, weekly: reports().map(clean) };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `생각서재-백업-${todayS()}.json`;
   document.body.appendChild(a); a.click(); a.remove();
@@ -450,6 +555,13 @@ const A = {
   netSel: a => set({ netSel: S.netSel === a ? null : a }),
   example: a => { set({ query: a, answer: null }); if (!a.startsWith('#')) ask(); },
   syncNow: () => runSync(),
+  reclassifyAll: () => reclassifyAll(),
+  // 주간 돌아보기
+  weeklyNow: () => makeWeekly(mondayOf(todayS()), { manual: true }),
+  weeklyRedo: a => { if (confirm('이 주의 돌아보기를 새로 만들까요? 지금 내용은 바뀌어요.')) makeWeekly(a, { manual: true }); },
+  openReport: a => set({ openReport: openReportId() === a ? 'none' : a, blogOpen: null }),
+  blogOpen: a => set({ blogOpen: S.blogOpen === a ? null : a }),
+  copyBlog: async a => { const r = S.notes.find(n => n.id === a); if (r && r.blog) toast(await copyText(blogMarkdown(r.blog)) ? '글감을 복사했어요. 블로그 편집기에 붙여 넣으세요.' : '복사하지 못했어요. 본문을 길게 눌러 직접 복사해 주세요.'); },
   signOut: async () => { if (confirm('로그아웃할까요? 이 기기의 기록은 그대로 남아요.')) { await sync.signOut(); toast('로그아웃했어요.'); } },
   loginReset: () => set({ loginStage: 'idle', code: '', loginErr: null }),
   skipLanding: () => { finishLanding(); focusDraft(); },
@@ -549,6 +661,7 @@ function render() {
   const cs = cats();
   const counts = Object.fromEntries(cs.map(c => [c.key, live().filter(n => n.cat === c.key).length]));
   const showNav = !wide && !(S.screen === 'write' && draftLen > 0);
+  const newReport = reports().some(r => !r.seen);
 
   let screen = '';
   if (S.screen === 'write') screen = vWrite(wide, draftLen);
@@ -562,7 +675,7 @@ function render() {
 <div class="shell">
   ${x(wide, `<aside class="side">
     <div class="logo">생각서재</div>
-    <nav>${each(tabs, ([k, l]) => `<button class="nav-item${navActive === k ? ' on' : ''}" ${act('go', k)}>${l}</button>`)}</nav>
+    <nav>${each(tabs, ([k, l]) => `<button class="nav-item${navActive === k ? ' on' : ''}" ${act('go', k)}>${l}${x(k === 'timeline' && newReport, '<span class="new-dot" aria-label="새 돌아보기"></span>')}</button>`)}</nav>
     <div class="side-cats"><div class="label">분야</div>
       ${each(cs, c => `<div class="side-cat" ${act('openCat', c.key)}><span>${c.emoji} ${c.name}</span><span>${counts[c.key]}</span></div>`)}
     </div>
@@ -573,7 +686,7 @@ function render() {
     ${x(!wide, `<div class="mobile-logo"><span>생각서재</span>${vSyncDot(true)}</div>`)}
     ${screen}
   </div></main>
-  ${x(showNav, `<nav class="tabbar">${each(tabs, ([k, l]) => `<button class="${navActive === k ? 'on' : ''}" ${act('go', k)}>${l}<i></i></button>`)}</nav>`)}
+  ${x(showNav, `<nav class="tabbar">${each(tabs, ([k, l]) => `<button class="${navActive === k ? 'on' : ''}" ${act('go', k)}>${l}${x(k === 'timeline' && newReport, '<span class="new-dot" aria-label="새 돌아보기"></span>')}<i></i></button>`)}</nav>`)}
   ${x(S.phase !== 'idle', vSheet(cs))}
   ${x(S.toast, `<div class="toast" role="status">${esc(S.toast)}</div>`)}
 </div>`;
@@ -668,7 +781,7 @@ function vWrite(wide, draftLen) {
   ${x(!typing && unexported && daysSinceExport >= 3, `<div class="notice caution" style="margin-top:28px"><span style="flex:1;min-width:200px">이 기기에만 저장돼 있어요. 브라우저 데이터를 지우면 사라질 수 있으니 가끔 백업을 내려받아 두세요.</span><button class="btn xs" ${act('exportData')}>지금 백업</button></div>`)}
   ${x(!typing && notes.length > 0, `<div class="stack g4" style="margin-top:40px">
     <div class="label" style="margin-bottom:6px">최근에 남긴 생각</div>
-    ${each(notes.slice(0, 3), n => `<div class="recent-row" ${act('openNote', n.id)}><span class="when">${rel(n.date)}</span><span class="what">${esc(n.summary)}</span></div>`)}
+    ${each(notes.slice(0, 3), n => `<div class="recent-row" ${act('openNote', n.id)}><span class="when">${rel(n.date)}</span><span class="what">${esc(titleOf(n.body))}</span></div>`)}
   </div>`)}
 </section>`;
 }
@@ -713,11 +826,10 @@ function vSheet(cs) {
           <input class="dashed" placeholder="+ 추가" value="${esc(S.newTag)}" data-in="newTag" data-kd="newTag">
         </div>
         ${n.book ? `<div style="font-size:14px;line-height:1.5">📖 『${esc(n.book.title)}』 <span style="color:var(--ink-2)">${esc(bookMeta(n.book))}</span></div>` : ''}
-        ${x(!isShort(n.body), `<div class="serif" style="font-size:15.5px;line-height:1.6;color:var(--ink-2)">“${esc(n.summary)}”</div>`)}
         ${x(n.checks && n.checks.length, `<div style="font-size:13px;color:var(--caution)">확인할 내용 ${(n.checks || []).length}개를 글에 함께 남겼어요.</div>`)}
         ${x(S.resNote, `<div style="font-size:13px;color:var(--ink-3)">${esc(S.resNote)}</div>`)}
       </div>
-      ${x(rel3.length, `<div class="row g8" style="font-size:13px;color:var(--accent);border-top:1px solid var(--line);padding-top:14px;line-height:1.5" ${act('openNote', rel3[0] ? rel3[0].n.id : '')}><span class="dot"></span>관련된 생각 ${rel3.length}개 — 「${esc(rel3[0] ? rel3[0].n.summary : '')}」${rel3.length > 1 ? ' 외' : ''}</div>`)}
+      ${x(rel3.length, `<div class="row g8" style="font-size:13px;color:var(--accent);border-top:1px solid var(--line);padding-top:14px;line-height:1.5" ${act('openNote', rel3[0] ? rel3[0].n.id : '')}><span class="dot"></span>관련된 생각 ${rel3.length}개 — 「${esc(rel3[0] ? titleOf(rel3[0].n.body) : '')}」${rel3.length > 1 ? ' 외' : ''}</div>`)}
       <button class="btn" style="padding:15px;min-height:50px" ${act('dismiss')}>좋아요</button>`;
     })();
   return `<div class="sheet-wrap"><div class="sheet-bg" ${S.phase === 'done' ? act('dismiss') : ''}></div><div class="sheet" role="dialog" aria-label="저장 결과"><div class="handle"></div>${inner}</div></div>`;
@@ -727,7 +839,7 @@ function vLibrary(cs) {
   const all = sorted();
   const lib = cs.map(c => {
     const ns = all.filter(n => n.cat === c.key);
-    return { ...c, ns, count: ns.length, last: ns[0] ? rel(ns[0].date) : '—', lastDate: ns[0] ? ns[0].date + (ns[0].createdAt || '') : '', latest: ns[0] ? ns[0].summary : '', latestId: ns[0] && ns[0].id,
+    return { ...c, ns, count: ns.length, last: ns[0] ? rel(ns[0].date) : '—', lastDate: ns[0] ? ns[0].date + (ns[0].createdAt || '') : '', latest: ns[0] ? titleOf(ns[0].body) : '', latestId: ns[0] && ns[0].id,
       subs: c.subs.map(sb => ({ ...sb, count: ns.filter(n => n.sub === sb.name).length, isNew: daysAgo(sb.born) <= 14 })) };
   }).sort((a, b) => b.lastDate.localeCompare(a.lastDate));
   const maxC = Math.max(1, ...lib.map(c => c.count));
@@ -849,6 +961,8 @@ function vManage() {
     <div style="font-size:13.5px;color:var(--accent);display:flex;align-items:center;gap:8px"><span class="dot${st.state === 'syncing' ? ' pulse' : ''}"></span>${esc(s.user && s.user.email || '로그인됨')} · ${st.state === 'syncing' ? '맞추는 중…' : st.at ? `마지막 동기화 ${new Date(st.at).toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' })}` : '동기화 대기'}</div>
     ${x(st.error, `<div style="font-size:13px;color:var(--warn-ink)">${esc(st.error)}</div>`)}
     <div style="font-size:12.5px;color:var(--ink-3)">AI 정리 · 이번 달 ${calls}회 호출${S.lastProvider ? ` · ${S.lastProvider === 'anthropic' ? 'Claude' : 'Gemini'}` : ''}</div>
+    ${x(S.aiError, `<div class="notice caution" style="font-size:12.5px"><span><b>AI 연결 문제</b> · ${esc(S.aiError)}</span></div>`)}
+    ${(() => { const p = live().filter(n => n.aiPending && !n.userSorted).length; return x(p, `<div class="row between g8 wrap" style="font-size:13px;color:var(--ink-2)"><span>간단 규칙으로만 분류된 글 ${p}편</span><button class="btn-o sm" style="min-height:38px;padding:6px 14px" ${act('reclassifyAll')} ${S.reclassBusy ? 'disabled' : ''}>${S.reclassBusy ? '정리하는 중…' : 'AI로 다시 정리'}</button></div>`); })()}
   </div>`;
   return `<div class="manage">
     <div class="label">내 기록 관리</div>
@@ -869,7 +983,7 @@ function noteRow(n, { showPath } = {}) {
   return `<div class="note-row" ${act('openNote', n.id)}>
     <div class="meta">${fmt(n.date)} · ${showPath ? `${c.emoji} ${c.name} › ` : ''}${esc(n.sub)}</div>
     ${x(n.book, `<div style="font-size:13px;color:var(--ink-2)">📖 『${esc(n.book && n.book.title)}』${n.book && n.book.author ? ' ' + esc(n.book.author) : ''}</div>`)}
-    <div class="sum">${esc(n.summary)}</div>
+    <div class="sum">${esc(titleOf(n.body))}</div>
     <div class="clamp2">${esc(n.body.replace(/\n/g, ' '))}</div>
     ${x(n.tags.length && !showPath, `<div class="tags">${each(n.tags, t => `<span>#${esc(t)}</span>`)}</div>`)}
   </div>`;
@@ -930,14 +1044,91 @@ function vDetail(cs) {
     ${each(n.body.split('\n').filter(p => p.trim()), p => `<p class="para">${esc(p)}</p>`)}
   </div>`}
   ${x(n.checks && n.checks.length, `<div class="card checks stack"><div class="label" style="color:var(--ink-2);padding-bottom:8px">아직 확인하지 않은 내용</div>${vChecks(n.checks, 'note')}</div>`)}
-  ${x(!isShort(n.body), `<div class="summary-box"><div class="label" style="color:var(--ink-2)">${n.aiPending && sync.configured() ? '한 줄 요약 · AI 정리 대기 중' : n.aiPending ? '한 줄 요약' : 'AI 한 줄 요약'}</div><div style="font-size:16px;line-height:1.6">${esc(n.summary)}</div></div>`)}
   <div class="stack g4" style="margin-top:12px">
     <h2 class="serif" style="margin:0 0 8px;font-size:20px;font-weight:700">이 글과 관련된 생각</h2>
     ${rels.length ? each(rels, r => { const rc = catOf(r.n.cat); return `<div class="rel-row" ${act('openNote', r.n.id)}>
       <div class="row g8 wrap" style="font-size:12.5px;color:var(--ink-3)"><span class="reason">${esc(r.reason)}</span><span>${rc.emoji} ${rc.name} › ${esc(r.n.sub)} · ${fmt(r.n.date)}</span></div>
-      <div class="serif" style="font-size:16.5px;line-height:1.5">${esc(r.n.summary)}</div></div>`; }) : `<div style="font-size:14px;color:var(--ink-3);padding:8px 0">아직 이어진 생각이 없어요. 글이 쌓이면 같은 태그·갈래끼리 이어져요.</div>`}
+      <div class="serif" style="font-size:16.5px;line-height:1.5">${esc(titleOf(r.n.body))}</div></div>`; }) : `<div style="font-size:14px;color:var(--ink-3);padding:8px 0">아직 이어진 생각이 없어요. 글이 쌓이면 같은 태그·갈래끼리 이어져요.</div>`}
   </div>
 </article>`;
+}
+
+// 블로그 초안의 아주 단순한 마크다운: 제목줄(#)과 목록(-)만 구분하고 나머지는 문단
+function mdLite(text) {
+  const out = []; let para = [], list = [];
+  const flushP = () => { if (para.length) { out.push(`<p class="md-p">${esc(para.join(' ').replace(/\*\*/g, ''))}</p>`); para = []; } };
+  const flushL = () => { if (list.length) { out.push(`<ul class="md-ul">${list.map(li => `<li>${esc(li.replace(/\*\*/g, ''))}</li>`).join('')}</ul>`); list = []; } };
+  for (const raw of String(text).split('\n')) {
+    const line = raw.trim();
+    if (!line) { flushP(); flushL(); continue; }
+    if (/^#{1,4}\s/.test(line)) { flushP(); flushL(); out.push(`<h4 class="md-h">${esc(line.replace(/^#+\s*/, ''))}</h4>`); continue; }
+    if (/^([-*]|\d+\.)\s/.test(line)) { flushP(); list.push(line.replace(/^([-*]|\d+\.)\s*/, '')); continue; }
+    flushL(); para.push(line);
+  }
+  flushP(); flushL();
+  return out.join('');
+}
+
+function vReport(r, open) {
+  const label = weekLabel(r.date) + (r.final ? '' : ' (진행 중)');
+  const head = `<div class="row between g8 wk-head" ${act('openReport', r.id)}>
+      <span class="stack g4"><span class="serif" style="font-size:18px;font-weight:700">${label}</span>
+      <span style="font-size:12.5px;color:var(--ink-3)">기록 ${r.noteCount || (r.noteIds || []).length}편 · 연결 ${(r.connections || []).length}개${r.blog ? ' · 글감 1개' : ''}</span></span>
+      <span class="link-accent">${open ? '접기' : '펼치기'}</span>
+    </div>`;
+  if (!open) return `<div class="wk-card">${head}</div>`;
+  const noteLink = id => { const n = findNote(id); return n ? `<button class="wk-note" ${act('openNote', n.id)}><span>${shortDate(n.date)}</span>${esc(titleOf(n.body))}</button>` : ''; };
+  const conns = (r.connections || []).length ? each(r.connections, c => `<div class="wk-conn">
+      <div style="font-size:15px;font-weight:700">${esc(c.title)}</div>
+      <div class="serif pretty" style="font-size:15.5px;line-height:1.75;color:var(--ink)">${esc(c.insight)}</div>
+      <div class="stack g4">${each(c.ids, noteLink)}</div>
+    </div>`) : `<div style="font-size:14px;color:var(--ink-3)">이번 주에는 뚜렷하게 이어지는 생각을 찾지 못했어요.</div>`;
+  const b = r.blog;
+  const blog = b ? `<div class="wk-blog">
+      <div class="label">✍️ 블로그 글감</div>
+      <div class="serif" style="font-size:20px;font-weight:700;line-height:1.45">${esc(b.title)}</div>
+      ${x(b.hook, `<div class="serif pretty" style="font-size:15.5px;line-height:1.75;color:var(--ink-2)">${esc(b.hook)}</div>`)}
+      ${x(b.outline.length, `<ol class="wk-outline">${each(b.outline, o => `<li>${esc(o)}</li>`)}</ol>`)}
+      ${S.blogOpen === r.id ? `<div class="wk-draft">${mdLite(b.draft)}</div>` : ''}
+      ${x(b.tags.length, `<div class="tags">${each(b.tags, t => `<span>#${esc(t)}</span>`)}</div>`)}
+      ${x((b.sourceIds || []).length, `<div class="stack g4"><span style="font-size:12px;color:var(--ink-3)">바탕이 된 기록</span>${each(b.sourceIds, noteLink)}</div>`)}
+      <div class="row g8 wrap">
+        <button class="btn-o sm" ${act('blogOpen', r.id)}>${S.blogOpen === r.id ? '본문 접기' : '본문 초안 보기'}</button>
+        <button class="btn xs" ${act('copyBlog', r.id)}>전체 복사</button>
+      </div>
+      <div style="font-size:12px;color:var(--ink-3);line-height:1.6">AI가 기록을 바탕으로 쓴 초안이에요. 사실과 표현을 확인하고, 이름 같은 개인정보가 없는지 본 뒤 올려 주세요.</div>
+    </div>` : `<div class="wk-blog"><div class="label">✍️ 블로그 글감</div><div style="font-size:14px;color:var(--ink-3)">이번 주에는 공개하기 좋은 글감을 찾지 못했어요.</div></div>`;
+  return `<div class="wk-card open">
+    ${head}
+    ${x(r.overview, `<div class="serif pretty wk-overview">${esc(r.overview)}</div>`)}
+    <div class="stack g12"><div class="label">🔗 생각의 연결고리</div>${conns}</div>
+    ${blog}
+    <div class="row between g8 wrap" style="font-size:12px;color:var(--ink-3)">
+      <span>${new Date(r.generatedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}에 만듦</span>
+      <button class="btn-t" style="font-size:12.5px;color:var(--ink-3)" ${act('weeklyRedo', r.date)} ${S.weeklyBusy ? 'disabled' : ''}>다시 만들기</button>
+    </div>
+  </div>`;
+}
+
+function vWeekly() {
+  const list = reports();
+  const thisMon = mondayOf(todayS());
+  const thisWeekCount = weekNotes(thisMon).length;
+  const busy = S.weeklyBusy ? `<div class="card row g10" style="padding:16px 18px;font-size:14.5px;color:var(--ink-2)"><span class="dot pulse"></span>${weekLabel(S.weeklyBusy)} 생각을 읽고 연결고리와 글감을 찾는 중… (1분쯤 걸려요)</div>` : '';
+  const canAI = sync.configured() && sync.session();
+  const intro = !canAI
+    ? `<div style="font-size:13.5px;color:var(--ink-2);line-height:1.65">로그인하면 매주 한 번, 지난주 생각들 사이의 연결고리와 통찰을 정리하고 블로그에 올릴 만한 글감 하나를 만들어 드려요.</div>`
+    : `<div style="font-size:13px;color:var(--ink-3);line-height:1.6">매주 새 주에 처음 열 때 지난주 기록을 자동으로 돌아봐요.</div>`;
+  const openId = openReportId();
+  return `<div class="stack g12">
+    <div class="row between g8" style="align-items:baseline">
+      <div class="label">주간 돌아보기</div>
+      ${x(canAI && thisWeekCount && !S.weeklyBusy, `<button class="link-accent" ${act('weeklyNow')}>이번 주 지금 돌아보기</button>`)}
+    </div>
+    ${intro}
+    ${busy}
+    ${each(list.slice(0, 8), r => vReport(r, r.id === openId))}
+  </div>`;
 }
 
 function vTimeline() {
@@ -963,11 +1154,12 @@ function vTimeline() {
   all.forEach(n => { let g = groups[groups.length - 1]; if (!g || g.date !== n.date) { const d = pd(n.date); g = { date: n.date, day: `${d.getMonth() + 1}.${d.getDate()}`, dow: DOW[d.getDay()] + '요일', notes: [] }; groups.push(g); } g.notes.push(n); });
   return `<section class="stack g32">
   <h1 class="title">흐름</h1>
+  ${vWeekly()}
   ${x(!all.length, `<div class="serif" style="font-size:18px;line-height:1.7;color:var(--ink-2)">아직 흐름이 없어요. 생각을 몇 개 남기면 날짜순 흐름과 한 달 돌아보기가 여기에 생겨요.</div>`)}
   ${month}
   <div class="stack">${each(groups.slice(0, 120), g => `<div class="tl-group">
     <div class="tl-day"><span class="serif" style="font-size:18px;font-weight:700">${g.day}</span><span style="font-size:12px;color:var(--ink-3)">${g.dow}</span></div>
-    <div class="tl-list">${each(g.notes, n => { const c = catOf(n.cat); return `<div class="tl-item" ${act('openNote', n.id)}><div style="font-size:12.5px;color:var(--ink-3)">${c.emoji} ${c.name} › ${esc(n.sub)}</div><div class="serif" style="font-size:17px;line-height:1.5">${esc(n.summary)}</div></div>`; })}</div>
+    <div class="tl-list">${each(g.notes, n => { const c = catOf(n.cat); return `<div class="tl-item" ${act('openNote', n.id)}><div style="font-size:12.5px;color:var(--ink-3)">${c.emoji} ${c.name} › ${esc(n.sub)}</div><div class="serif" style="font-size:17px;line-height:1.5">${esc(titleOf(n.body))}</div></div>`; })}</div>
   </div>`)}</div>
 </section>`;
 }
@@ -1002,7 +1194,7 @@ function vNet(mNotes) {
     else { label = '#' + n.key; list = mNotes.filter(m => m.tags.includes(n.key)); }
     sel = `<div class="stack" style="border-top:1px solid var(--line);padding-top:12px">
       <div class="row between g10"><span style="font-size:14px;font-weight:600">${esc(label)} <span style="font-weight:400;color:var(--ink-3)">· 이번 달 ${list.length}편</span></span><button class="btn-t" style="font-size:13px;color:var(--ink-3)" ${act('netSel', n.id)}>닫기</button></div>
-      ${each(list, m => `<div class="row g12" style="padding:12px 0;border-top:1px solid var(--hover);align-items:baseline" ${act('openNote', m.id)}><span style="font-size:12.5px;color:var(--ink-3);flex-shrink:0">${shortDate(m.date)}</span><span class="serif" style="font-size:15.5px;line-height:1.5">${esc(m.summary)}</span></div>`)}
+      ${each(list, m => `<div class="row g12" style="padding:12px 0;border-top:1px solid var(--hover);align-items:baseline" ${act('openNote', m.id)}><span style="font-size:12.5px;color:var(--ink-3);flex-shrink:0">${shortDate(m.date)}</span><span class="serif" style="font-size:15.5px;line-height:1.5">${esc(titleOf(m.body))}</span></div>`)}
     </div>`;
   }
   return `<div class="stack g12"><div class="net"><svg aria-hidden="true">${lines}</svg>${dots}</div>${sel}</div>`;
@@ -1013,7 +1205,7 @@ function vSearch() {
   const isNL = /더라|했었|썼지|언제|뭐라|어떻게|\?|？|있었/.test(q);
   const all = sorted();
   let results = [];
-  if (q) { const k = q.replace(/^#/, ''); results = isNL ? nlScore(q, all) : all.filter(n => [n.body, n.summary, n.tags.join(' '), n.sub, catOf(n.cat).name, n.book ? n.book.title : ''].join(' ').includes(k)); }
+  if (q) { const k = q.replace(/^#/, ''); results = isNL ? nlScore(q, all) : all.filter(n => [n.body, n.tags.join(' '), n.sub, catOf(n.cat).name, n.book ? n.book.title : ''].join(' ').includes(k)); }
   const ansNotes = S.answer ? S.answer.ids.map(findNote).filter(Boolean) : [];
   return `<section class="stack g24">
   <h1 class="title">검색</h1>
@@ -1026,7 +1218,7 @@ function vSearch() {
   ${x(S.answer, `<div class="card stack g14" style="border-radius:16px;padding:22px">
     <div class="label">기록에서 찾은 답</div>
     <div class="serif pretty" style="font-size:18px;line-height:1.7">${esc(S.answer && S.answer.text)}</div>
-    <div class="stack">${each(ansNotes, n => `<div class="row g12" style="padding:12px 0;border-top:1px solid var(--line);align-items:baseline" ${act('openNote', n.id)}><span style="font-size:12.5px;color:var(--ink-3);flex-shrink:0">${shortDate(n.date)}</span><span style="font-size:14.5px;color:var(--accent);line-height:1.5">${esc(n.summary)} →</span></div>`)}</div>
+    <div class="stack">${each(ansNotes, n => `<div class="row g12" style="padding:12px 0;border-top:1px solid var(--line);align-items:baseline" ${act('openNote', n.id)}><span style="font-size:12.5px;color:var(--ink-3);flex-shrink:0">${shortDate(n.date)}</span><span style="font-size:14.5px;color:var(--accent);line-height:1.5">${esc(titleOf(n.body))} →</span></div>`)}</div>
   </div>`)}
   ${x(q, `<div class="stack"><div style="font-size:13px;color:var(--ink-3);padding-bottom:4px">${isNL ? `관련 있을 만한 기록 ${results.length}편` : `‘${esc(q)}’ 포함 ${results.length}편`}</div>${each(results.slice(0, 80), n => noteRow(n, { showPath: true }))}</div>`)}
 </section>`;
@@ -1040,6 +1232,7 @@ async function boot() {
     const aiUsage = { ...S.aiUsage, [m]: (S.aiUsage[m] || 0) + 1 };
     set({ aiUsage, lastProvider: r.provider }); db.set('aiUsage', aiUsage);
   };
+  ai.onError = msg => set({ aiError: msg });
   let hadSession = false;
   sync.subscribe(() => {
     const has = !!sync.session();
