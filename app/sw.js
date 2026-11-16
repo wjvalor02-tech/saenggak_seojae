@@ -1,7 +1,7 @@
 // 오프라인에서도 앱이 열리도록 앱 껍데기를 캐시한다. 기록 데이터는 IndexedDB에 있으므로 여기서 다루지 않는다.
-const VERSION = 'seojae-v2';
+const VERSION = 'seojae-v3';
 const SHELL = ['./', './index.html', './styles.css', './config.js', './manifest.webmanifest', './icons/icon.svg',
-  './js/app.js', './js/morph.js', './js/util.js', './js/store.js', './js/sync.js', './js/ai.js', './js/net.js'];
+  './js/app.js', './js/morph.js', './js/util.js', './js/store.js', './js/sync.js', './js/ai.js', './js/net.js', './js/export.js'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'no-store' })))).then(() => self.skipWaiting()));

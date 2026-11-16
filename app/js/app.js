@@ -4,6 +4,7 @@ import { db, deriveCats, normalizeImport, clean, requestPersist } from './store.
 import { sync } from './sync.js';
 import { ai, nlScore, titleOf } from './ai.js';
 import { layoutNet } from './net.js';
+import { makeXlsx, makeDocx, download } from './export.js';
 
 // ───────────────────────── 상태 ─────────────────────────
 const S = {
@@ -506,6 +507,81 @@ function exportData() {
   document.body.appendChild(a); a.click(); a.remove();
   const at = new Date().toISOString(); set({ lastExport: at }); db.set('lastExport', at);
 }
+// ───────── 엑셀·워드 내보내기 (읽기·인쇄용, 앱으로 다시 불러올 수는 없음) ─────────
+const DOW_KO = '일월화수목금토';
+const tagLine = n => n.tags.map(t => '#' + t).join(' ');
+const bookLine = b => b ? `『${b.title}』${bookMeta(b) ? ' ' + bookMeta(b) : ''}` : '';
+const plainDraft = md => String(md || '').split('\n').map(l => l.replace(/^#+\s*/, '').replace(/^[-*]\s+/, '• ').replace(/\*\*/g, '')).join('\n');
+
+function exportXlsx() {
+  const notes = sorted();
+  const noteRows = notes.map(n => {
+    const c = catOf(n.cat);
+    return [n.date, DOW_KO[pd(n.date).getDay()], c.name, n.sub, tagLine(n), titleOf(n.body), n.body, bookLine(n.book), n.edited || '', n.aiPending ? '간단 분류' : 'AI'];
+  });
+  const weekRows = reports().map(r => [
+    weekLabel(r.date) + (r.final ? '' : ' (진행 중)'),
+    r.overview || '',
+    (r.connections || []).map(c => `[${c.title}] ${c.insight}`).join('\n\n'),
+    r.blog ? r.blog.title : '',
+    r.blog ? [r.blog.hook, '', plainDraft(r.blog.draft)].join('\n').trim() : '',
+    r.blog ? r.blog.tags.map(t => '#' + t).join(' ') : '',
+  ]);
+  const cs = cats().filter(c => !c.virtual);
+  const catRows = [];
+  cs.forEach(c => {
+    const ns = notes.filter(n => n.cat === c.key);
+    if (!c.subs.length) catRows.push([`${c.emoji} ${c.name}`, '', ns.length]);
+    c.subs.forEach(sb => catRows.push([`${c.emoji} ${c.name}`, sb.name, ns.filter(n => n.sub === sb.name).length]));
+  });
+  const blob = makeXlsx([
+    { name: '기록', rows: noteRows, cols: [{ title: '날짜', width: 12 }, { title: '요일', width: 6 }, { title: '분야', width: 10 }, { title: '갈래', width: 14 }, { title: '태그', width: 24 }, { title: '제목', width: 36 }, { title: '본문', width: 80 }, { title: '책', width: 30 }, { title: '수정한 날', width: 12 }, { title: '분류', width: 10 }] },
+    { name: '주간 돌아보기', rows: weekRows, cols: [{ title: '주', width: 20 }, { title: '이번 주 흐름', width: 50 }, { title: '생각의 연결고리', width: 60 }, { title: '블로그 글감 제목', width: 30 }, { title: '블로그 초안', width: 80 }, { title: '글감 태그', width: 24 }] },
+    { name: '분야와 갈래', rows: catRows, cols: [{ title: '분야', width: 16 }, { title: '갈래', width: 18 }, { title: '글 수', width: 8 }] },
+  ]);
+  download(blob, `생각서재-기록-${todayS()}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  toast(`글 ${notes.length}편을 엑셀로 내보냈어요.`);
+}
+
+function exportDocx() {
+  const notes = sorted();
+  const blocks = [
+    { type: 'title', text: '생각서재 기록' },
+    { type: 'meta', text: `${fmtPlain(todayS())} 내보냄 · 글 ${notes.length}편` },
+  ];
+  let month = '';
+  for (const n of notes) {
+    const m = n.date.slice(0, 7);
+    if (m !== month) { month = m; blocks.push({ type: 'h1', text: `${m.slice(0, 4)}년 ${Number(m.slice(5))}월` }); }
+    const c = catOf(n.cat);
+    blocks.push({ type: 'h2', text: titleOf(n.body) });
+    blocks.push({ type: 'meta', text: [fmt(n.date), `${c.emoji} ${c.name} › ${n.sub}`, tagLine(n)].filter(Boolean).join(' · ') });
+    if (n.book) blocks.push({ type: 'meta', text: '📖 ' + bookLine(n.book) });
+    // 짧은 글은 제목이 곧 본문이라 본문을 다시 쓰지 않는다
+    if (titleOf(n.body) !== n.body.replace(/\s+/g, ' ').trim()) {
+      n.body.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).forEach(p => blocks.push({ type: 'p', text: p }));
+    }
+  }
+  const rs = reports();
+  if (rs.length) {
+    blocks.push({ type: 'h1', text: '주간 돌아보기' });
+    for (const r of rs) {
+      blocks.push({ type: 'h2', text: weekLabel(r.date) + (r.final ? '' : ' (진행 중)') });
+      if (r.overview) blocks.push({ type: 'quote', text: r.overview });
+      (r.connections || []).forEach(c => blocks.push({ type: 'bullet', text: `${c.title} — ${c.insight}` }));
+      if (r.blog) {
+        blocks.push({ type: 'meta', text: '✍️ 블로그 글감' });
+        blocks.push({ type: 'h2', text: r.blog.title });
+        if (r.blog.hook) blocks.push({ type: 'quote', text: r.blog.hook });
+        plainDraft(r.blog.draft).split(/\n{2,}/).map(p => p.trim()).filter(Boolean).forEach(p => blocks.push({ type: 'p', text: p }));
+        if (r.blog.tags.length) blocks.push({ type: 'meta', text: r.blog.tags.map(t => '#' + t).join(' ') });
+      }
+    }
+  }
+  download(makeDocx(blocks), `생각서재-기록-${todayS()}.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  toast(`글 ${notes.length}편을 워드로 내보냈어요.`);
+}
+
 function importData(file) {
   const r = new FileReader();
   r.onload = async () => {
@@ -578,6 +654,7 @@ const A = {
   netSel: a => set({ netSel: S.netSel === a ? null : a }),
   example: a => { set({ query: a, answer: null }); if (!a.startsWith('#')) ask(); },
   syncNow: () => runSync(),
+  exportXlsx: () => exportXlsx(), exportDocx: () => exportDocx(),
   reclassifyAll: () => reclassifyAll(),
   // 주간 돌아보기
   weeklyNow: () => makeWeekly(mondayOf(todayS()), { manual: true }),
@@ -992,10 +1069,24 @@ function vManage() {
     ${syncBlock}
     <div class="row g8 wrap">
       ${x(s, `<button class="btn xs" ${act('syncNow')}>지금 동기화</button>`)}
-      <button class="btn-o sm" ${act('exportData')}>백업 내보내기</button>
-      <button class="btn-o sm" ${act('importClick')}>백업 불러오기</button>
       ${x(s, `<button class="btn-t" style="font-size:13.5px;padding:10px 8px" ${act('signOut')}>로그아웃</button>`)}
       <button class="btn-danger" ${act('resetAll')}>전체 초기화</button>
+    </div>
+    <div class="stack g8" style="margin-top:6px">
+      <div class="label">내보내기</div>
+      <div class="row g8 wrap">
+        <button class="btn-o sm" ${act('exportXlsx')}>엑셀로 내보내기</button>
+        <button class="btn-o sm" ${act('exportDocx')}>워드로 내보내기</button>
+      </div>
+      <div style="font-size:12.5px;color:var(--ink-3);line-height:1.6">엑셀은 표로 정렬·검색하기 좋고, 워드는 날짜순으로 읽거나 인쇄하기 좋아요. 주간 돌아보기와 블로그 글감도 함께 들어가요.</div>
+    </div>
+    <div class="stack g8" style="margin-top:6px">
+      <div class="label">복원용 백업</div>
+      <div class="row g8 wrap">
+        <button class="btn-o sm" ${act('exportData')}>백업 파일 받기(JSON)</button>
+        <button class="btn-o sm" ${act('importClick')}>백업 불러오기</button>
+      </div>
+      <div style="font-size:12.5px;color:var(--ink-3);line-height:1.6">앱으로 다시 불러올 수 있는 건 이 백업 파일(.json)뿐이에요. 엑셀·워드 파일은 불러올 수 없어요.</div>
     </div>
     ${x(sync.configured(), `<div style="font-size:12px;color:var(--ink-3);line-height:1.6">Gemini 무료 등급은 입력한 글이 서비스 개선에 쓰일 수 있어요. 육아·개인 기록이 많다면 유료 등급이나 Claude로 바꾸는 걸 권해요.</div>`)}
   </div>`;
