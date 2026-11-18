@@ -16,7 +16,7 @@ const S = {
   libView: 'shelf', shelfKey: null, catKey: null, subFilter: null, noteId: null,
   query: '', answer: null, aiLoading: false, newSub: '', detailEditing: false,
   checks: null, checkStatus: 'idle', bodyEditing: false, bodyDraft: '', netSel: null,
-  listening: false, voiceErr: null, book: null, bookStatus: 'idle', bookDismissed: false,
+  book: null, bookStatus: 'idle', bookDismissed: false,
   email: '', code: '', loginStage: 'idle', loginErr: null, loginBusy: false,
   lastExport: null, aiUsage: {}, toast: null, landingDone: false,
   // 분야 관리
@@ -27,7 +27,7 @@ const S = {
   weeklyBusy: null, openReport: null, blogOpen: null,
 };
 const root = document.getElementById('app');
-let timer = null, bookTimer = null, bookToken = null, checkToken = null, lastKey = null, lastLen = 0, rec = null, toastTimer = null, syncTimer = null;
+let timer = null, bookTimer = null, bookToken = null, checkToken = null, lastKey = null, lastLen = 0, toastTimer = null, syncTimer = null;
 let ta = null;
 
 // kind가 있는 행(주간 돌아보기 등)은 글이 아니므로 목록에서 뺀다
@@ -124,7 +124,8 @@ function scheduleSync(delay = 1200) {
   syncTimer = setTimeout(runSync, delay);
 }
 const syncApi = {
-  getNotes: () => S.notes,
+  // 작성 완료를 누르지 않은 글(unconfirmed)은 아직 서버로 보내지 않는다
+  getNotes: () => S.notes.filter(n => !n.unconfirmed),
   async applyRemote(remote) {
     const map = new Map(S.notes.map(n => [n.id, n]));
     const changed = [];
@@ -179,7 +180,7 @@ function classifyHints(excludeId) {
 
 async function reclassifyPending(limit = 5) {
   if (reclassifying || !ai.available()) return 0;
-  const pending = live().filter(n => n.aiPending && !n.userSorted).slice(0, limit);
+  const pending = live().filter(n => n.aiPending && !n.userSorted && !n.unconfirmed).slice(0, limit);
   if (!pending.length) return 0;
   reclassifying = true;
   let done = 0;
@@ -347,7 +348,7 @@ async function lookupBook() {
 }
 
 async function save() {
-  if (S.listening && rec) rec.stop();
+
   const text = S.draft.trim();
   if (!text || S.phase === 'classifying') return;
   clearTimeout(timer);
@@ -360,8 +361,9 @@ async function save() {
   // 1) 일단 휴리스틱 결과로 바로 저장(유실 방지) → 2) AI 결과로 덮어쓴다
   const id = uid();
   const now = new Date().toISOString();
-  const draftNote = { id, date: todayS(), cat: 'daily', sub: '생각', tags: [], summary: titleOf(text), body: text, aiPending: true, createdAt: now, ...(book ? { book } : {}), ...(checks ? { checks } : {}) };
-  set({ phase: 'classifying', draft: '', editing: false, book: null, bookStatus: 'idle', bookDismissed: false, checks: null, checkStatus: 'idle', resId: id, resNote: '' });
+  const draftNote = { id, date: writeDate(), cat: 'daily', sub: '생각', tags: [], summary: titleOf(text), body: text, aiPending: true, unconfirmed: true, createdAt: now, ...(book ? { book } : {}), ...(checks ? { checks } : {}) };
+  // 고른 날짜는 이 글에만 쓰고 다음 글은 다시 오늘로(모르고 지난 날짜로 저장되는 것을 막음)
+  set({ phase: 'classifying', draft: '', writeDate: null, editing: false, book: null, bookStatus: 'idle', bookDismissed: false, checks: null, checkStatus: 'idle', resId: id, resNote: '' });
   await writeNote(draftNote);
 
   const before = cats();
@@ -387,38 +389,49 @@ async function save() {
     const isNew = await apply(quick, false);
     // AI가 실패했으면 이유를 함께 알린다(예전엔 조용히 간단 분류만 해서 원인을 알 수 없었다)
     set({ phase: 'done', resNew: !!isNew, resNote: quick.aiPending ? failNote() : '' });
-    arm();
+    // 자동으로 닫지 않는다: 사용자가 '작성 완료'를 눌러야 확정
     return;
   }
   // 늦으면 간단 분류로 먼저 보여 주고, AI 결과가 도착하면 저절로 바꾼다(다음 글을 바로 쓸 수 있게)
   const isNew = await apply(ai.guess(text, before, book), false);
   set({ phase: 'done', resNew: !!isNew, resNote: 'AI가 아직 정리하는 중이에요. 끝나면 분류와 태그가 저절로 바뀌어요.' });
-  arm();
+
   const r = await aiP;
   const here = () => S.resId === id && S.phase === 'done';
   if (r.aiPending) { if (here()) set({ resNote: failNote() }); return; }
   const changed = await apply(r, true);
   if (changed !== null && here()) set({ resNew: changed, resNote: 'AI가 정리를 마쳤어요.' });
 }
-function arm() { clearTimeout(timer); timer = setTimeout(() => { if (!S.editing) dismiss(); }, 4000); }
-function dismiss() { clearTimeout(timer); set({ phase: 'idle', editing: false, newTag: '', newSub: '' }); if (S.screen === 'write') focusDraft(); }
+// (예전엔 4초 뒤 시트가 저절로 닫혀 확인하기 전에 저장된 것처럼 보였다 → 이제 '작성 완료'를 눌러야 닫힌다)
 
-function toggleVoice() {
-  if (S.listening) { rec && rec.stop(); return; }
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { set({ voiceErr: '이 브라우저는 음성 입력을 지원하지 않아요. 키보드의 마이크 버튼을 써 주세요.' }); return; }
-  rec = new SR(); rec.lang = 'ko-KR'; rec.continuous = true; rec.interimResults = true;
-  const base = S.draft; let finalText = '';
-  rec.onresult = e => {
-    let interim = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) finalText += t; else interim += t; }
-    const sep = base && !/\s$/.test(base) ? ' ' : '';
-    onDraft(base + sep + finalText + interim);
-  };
-  rec.onerror = e => set({ listening: false, voiceErr: e.error === 'not-allowed' || e.error === 'service-not-allowed' ? '마이크 권한이 필요해요. 브라우저 설정에서 허용해 주세요.' : e.error === 'no-speech' || e.error === 'aborted' ? null : '음성을 인식하지 못했어요. 다시 시도해 주세요.' });
-  rec.onend = () => set({ listening: false });
-  try { rec.start(); set({ listening: true, voiceErr: null }); } catch (e) { set({ voiceErr: '음성 입력을 시작하지 못했어요.' }); }
+// '작성 완료': 확정하고 동기화 대상으로 올린다
+async function confirmNote() {
+  const n = S.notes.find(x => x.id === S.resId);
+  if (n && n.unconfirmed) { const { unconfirmed: _u, ...rest } = n; await writeNote(rest); }
+  dismiss();
+  showNextUnconfirmed();
 }
+// '다시 고치기': 확정 전이라 서버에 간 적이 없으니 글을 지우고, 쓴 내용을 입력칸으로 되돌린다
+async function reviseNote() {
+  const n = S.notes.find(x => x.id === S.resId);
+  dismiss();
+  if (!n) return;
+  set({ notes: S.notes.filter(x => x.id !== n.id), resId: null });
+  try { await db.delNote(n.id); } catch (e) { /* 무시 */ }
+  set({
+    draft: n.body, writeDate: n.date !== todayS() ? n.date : null,
+    ...(n.book ? { book: { ...n.book, key: 'restored' }, bookStatus: 'found', bookDismissed: false } : {}),
+    ...(n.checks && n.checks.length ? { checks: n.checks, checkStatus: 'done' } : {}),
+  });
+  try { localStorage.setItem('seojae-draft', n.body); } catch (e) { /* 무시 */ }
+  focusDraft();
+}
+// 작성 완료를 누르기 전에 앱이 닫혔던 글이 있으면 다시 보여 준다(기록은 기기에 안전하게 남아 있음)
+function showNextUnconfirmed() {
+  const u = S.notes.filter(n => n.unconfirmed && !n.deletedAt).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0];
+  if (u) set({ resId: u.id, phase: 'done', editing: false, resNew: false, resNote: '아직 작성 완료를 누르지 않은 글이에요. 분류를 확인하고 완료해 주세요.' });
+}
+function dismiss() { clearTimeout(timer); set({ phase: 'idle', editing: false, newTag: '', newSub: '' }); if (S.screen === 'write') focusDraft(); }
 
 async function runCheck() {
   const text = S.draft.trim(); if (!text || S.checkStatus === 'loading') return;
@@ -453,7 +466,7 @@ function addTagDraft() { addTagWord(S.newTagDraft); set({ newTagDraft: '', tagsD
 
 function startBodyEdit() {
   const n = findNote(S.noteId); if (!n) return;
-  set({ bodyEditing: true, bodyDraft: n.body, tagsDraft: [...n.tags], newTagDraft: '', detailEditing: false });
+  set({ bodyEditing: true, bodyDraft: n.body, bodyDate: n.date, tagsDraft: [...n.tags], newTagDraft: '', detailEditing: false });
 }
 function saveBody(id) {
   const body = S.bodyDraft.trim(); if (!body) return;
@@ -463,6 +476,8 @@ function saveBody(id) {
   const tagsChanged = tags.join('\u0001') !== n.tags.join('\u0001');
   writeNote({
     ...n, body, tags,
+    // 작성 날짜를 바꿨으면 함께 저장(미래 날짜는 막음)
+    date: S.bodyDate && S.bodyDate <= todayS() ? S.bodyDate : n.date,
     // 목록 제목은 AI 요약 대신 글의 첫 문장(본문이 바뀌면 같이 바뀜)
     summary: titleOf(body),
     ...(body !== n.body || tagsChanged ? { edited: todayS() } : {}),
@@ -630,11 +645,13 @@ async function verifyCode() {
 
 // ───────────────────────── 이벤트 위임 ─────────────────────────
 const A = {
-  go: a => go(a), back, save, dismiss, toggleVoice, runCheck, exportData, resetAll, sendLink, verifyCode, ask,
-  openNote: a => { if (S.phase !== 'idle') dismiss(); openNote(a); }, openCat: (a, el) => openCat(a, el.dataset.sub || null),
+  go: a => go(a), back, save, dismiss, confirmNote, reviseNote, runCheck, exportData, resetAll, sendLink, verifyCode, ask,
+  openNote: a => { if (S.phase === 'done') confirmNote(); openNote(a); }, openCat: (a, el) => openCat(a, el.dataset.sub || null),
   importClick: () => document.getElementById('file-in').click(),
   dismissBook: () => { bookToken = null; set({ bookDismissed: true }); },
-  closeVoiceErr: () => set({ voiceErr: null }),
+  // 작성 날짜: 날짜 칸을 누르면 달력을 연다(지원하는 브라우저). 휴대폰은 기본 날짜 선택기가 뜬다.
+  openDatePicker: (a, el) => { try { el.showPicker && el.showPicker(); } catch (e) { /* 일부 브라우저는 직접 열기를 막음 → 기본 동작 */ } },
+  dateToday: () => { set({ writeDate: null }); focusDraft(); },
   closeCheck: () => { checkToken = null; set({ checkStatus: 'idle', checks: null }); },
   removeCheck: a => set({ checks: S.checks.filter((_, k) => k !== +a) }),
   toggleCat: () => set({ editing: !S.editing, newSub: '' }),
@@ -671,6 +688,8 @@ const A = {
   addCat, startEditCat: a => startEditCat(a), saveEditCat,
   cancelEditCat: () => set({ catEdit: null, delCat: null, catErr: null }),
   askDeleteCat: a => askDeleteCat(a), deleteCat, resetCats,
+  // 책등의 🗑️: 수정 칸을 열면서 바로 삭제 확인을 띄운다
+  quickDeleteCat: a => { startEditCat(a); askDeleteCat(a); },
   cancelDeleteCat: () => set({ delCat: null, delTarget: null }),
   delTarget: a => set({ delTarget: a }),
   // 글 수정 화면의 태그
@@ -678,6 +697,8 @@ const A = {
   addTagDraft: () => addTagDraft(),
 };
 const IN = {
+  writeDate: v => set({ writeDate: v && v <= todayS() ? v : null }),
+  bodyDate: v => set({ bodyDate: v && v <= todayS() ? v : S.bodyDate }),
   newCatName: v => set({ newCatName: v, catErr: null }), newCatEmoji: v => set({ newCatEmoji: v, catErr: null }),
   editCatName: v => set({ editCatName: v, catErr: null }), editCatEmoji: v => set({ editCatEmoji: v, catErr: null }),
   newTagDraft: v => {
@@ -715,7 +736,8 @@ root.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
   if (!el || !root.contains(el)) return;
   const f = A[el.dataset.act];
-  if (f) { e.preventDefault(); f(el.dataset.arg ?? '', el, e); }
+  // 입력칸(날짜 등)은 기본 동작(키보드·날짜 선택기)을 막지 않는다
+  if (f) { if (el.tagName !== 'INPUT') e.preventDefault(); f(el.dataset.arg ?? '', el, e); }
 });
 root.addEventListener('input', e => { const k = e.target.dataset && e.target.dataset.in; if (k && IN[k]) IN[k](e.target.value, e.target); });
 root.addEventListener('keydown', e => { const k = e.target.dataset && e.target.dataset.kd; if (k && KD[k]) KD[k](e, e.target); });
@@ -728,8 +750,13 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // ───────────────────────── 렌더 ─────────────────────────
 const x = (cond, html) => cond ? html : '';
 const each = (list, fn) => list.map(fn).join('');
+// HTML은 <textarea> 바로 뒤의 줄바꿈 하나를 버린다. 그래서 글이 줄바꿈으로 시작하면(맨 앞에서 Enter → 위에 줄 추가)
+// 다시 그릴 때 그 줄이 사라지고 커서가 끝으로 튀었다. 줄바꿈 하나를 먼저 넣어 두면 원래 내용이 그대로 남는다.
+const taText = s => '\n' + esc(s);
+// 글을 쓸 날짜(기본: 오늘). 미래 날짜는 고를 수 없다.
+const writeDate = () => (S.writeDate && S.writeDate <= todayS() ? S.writeDate : todayS());
+const fmtLong = s => fmt(s).replace(/ \((.)\)/, ' $1요일');
 const act = (name, arg = '', extra = '') => `data-act="${name}" data-arg="${esc(arg)}"${extra}`;
-const micSvg = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"></path></svg>';
 
 function vLanding() {
   return `<div class="landing">
@@ -843,8 +870,19 @@ function vWrite(wide, draftLen) {
   const daysSinceExport = S.lastExport ? Math.floor((Date.now() - new Date(S.lastExport)) / 864e5) : 99;
   const b = S.book;
   const bm = b ? bookMeta(b) : '';
+  const wd = writeDate();
+  const past = wd !== todayS();
+  // 글 입력칸 위쪽 요소들은 항상 같은 상자(.draft-top) 안에 둔다.
+  // 입력칸 앞에 요소가 생겼다 사라지면 화면 갱신 때 입력칸이 새로 만들어져 커서·포커스를 잃기 때문.
   return `<section class="stack g20">
-  <div class="date-label${typing ? ' typing' : ''}">${todayLabel()}</div>
+  <div class="draft-top stack g20">
+  <div class="date-row${typing ? ' typing' : ''}">
+    <label class="date-pick${past ? ' past' : ''}">
+      <span>${fmtLong(wd)}</span><span class="caret" aria-hidden="true">▾</span>
+      <input type="date" class="date-input" aria-label="작성 날짜" max="${todayS()}" value="${wd}" data-in="writeDate" ${act('openDatePicker')}>
+    </label>
+    ${x(past, `<span class="date-note">지난 날짜로 기록해요</span><button class="link-accent" ${act('dateToday')}>오늘로</button>`)}
+  </div>
   ${x(S.bookStatus === 'loading' && !S.bookDismissed, `<div class="row g10" style="font-size:13.5px;color:var(--ink-3);padding:2px 0"><span class="dot pulse"></span>책 정보를 찾는 중…</div>`)}
   ${x(S.bookStatus === 'found' && b && !S.bookDismissed, `<div class="card book-card" style="border-radius:12px">
     <div class="book-shape"></div>
@@ -855,8 +893,8 @@ function vWrite(wide, draftLen) {
     </div>
     <button class="btn-x" aria-label="책 정보 지우기" ${act('dismissBook')}>×</button>
   </div>`)}
-  <textarea class="draft" data-in="draft" data-kd="draft" placeholder="떠오르는 생각을 그대로 적어보세요." aria-label="생각 기록">${esc(S.draft)}</textarea>
-  ${x(S.voiceErr && !S.listening, `<div class="banner err">${esc(S.voiceErr)}<button class="btn-x" style="color:var(--warn-ink);width:40px;height:40px" aria-label="닫기" ${act('closeVoiceErr')}>×</button></div>`)}
+  </div>
+  <textarea class="draft" data-in="draft" data-kd="draft" placeholder="떠오르는 생각을 그대로 적어보세요." aria-label="생각 기록">${taText(S.draft)}</textarea>
   ${x(S.checkStatus === 'loading', `<div class="banner plain loading g10"><span class="dot pulse"></span>사실관계를 확인할 부분을 찾는 중…</div>`)}
   ${x(S.checkStatus === 'unavailable' || S.checkStatus === 'error', `<div class="banner plain">${S.checkStatus === 'unavailable' ? 'AI 검토는 로그인하고 온라인일 때 쓸 수 있어요.' : '검토하지 못했어요. 잠시 후 다시 시도해 주세요.'}<button class="btn-x" style="width:40px;height:40px" aria-label="닫기" ${act('closeCheck')}>×</button></div>`)}
   ${x(S.checkStatus === 'done' && S.checks && !S.checks.length, `<div class="banner ok">따로 확인할 내용이 없어요.<button class="btn-x" style="color:var(--accent);width:40px;height:40px" aria-label="닫기" ${act('closeCheck')}>×</button></div>`)}
@@ -867,8 +905,7 @@ function vWrite(wide, draftLen) {
   </div>`)}
   <div class="write-foot">
     <div class="row g12" style="min-width:0">
-      ${x(!wide, S.listening ? `<button class="mic on" aria-label="음성 입력 멈추기" ${act('toggleVoice')}><span></span></button>` : `<button class="mic" aria-label="음성으로 기록" ${act('toggleVoice')}>${micSvg}</button>`)}
-      ${S.listening ? `<span class="hint rec">듣고 있어요… 말을 마치면 ■</span>` : `<span class="hint">${typing ? `${draftLen}자${wide ? ` · ${/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'}↵ 저장` : ''}` : '제목도 분류도 필요 없어요. 쓰기만 하세요.'}</span>`}
+      <span class="hint">${typing ? `${draftLen}자${wide ? ` · ${/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'}↵ 저장` : ''}` : '제목도 분류도 필요 없어요. 쓰기만 하세요.'}</span>
     </div>
     ${typing && S.phase !== 'classifying' ? `<div class="row g6" style="flex-shrink:0"><button class="btn-o" ${act('runCheck')}>${S.checkStatus === 'loading' ? '검토 중…' : 'AI 검토'}</button><button class="btn" ${act('save')}>저장</button></div>` : `<button class="btn" disabled>저장</button>`}
   </div>
@@ -916,7 +953,7 @@ function vSheet(cs) {
       const c = catOf(n.cat);
       const rel3 = related(n).slice(0, 3);
       const idA = ` data-id="${esc(n.id)}"`;
-      return `<div style="font-size:13px;color:var(--ink-2)">저장했어요 · 이렇게 정리했어요</div>
+      return `<div style="font-size:13px;color:var(--ink-2)">이렇게 정리했어요 · 확인 후 작성 완료를 눌러 주세요</div>
       <div class="stack g12">
         <div class="cat-row" ${act('toggleCat')}><span class="path">${c.emoji} ${c.name} › ${esc(n.sub)}</span><span class="link-accent">${S.editing ? '닫기' : '바꾸기'}</span></div>
         ${x(S.editing, vEditor(n, cs, false))}
@@ -930,9 +967,9 @@ function vSheet(cs) {
         ${x(S.resNote, `<div style="font-size:13px;color:var(--ink-3)">${esc(S.resNote)}</div>`)}
       </div>
       ${x(rel3.length, `<div class="row g8" style="font-size:13px;color:var(--accent);border-top:1px solid var(--line);padding-top:14px;line-height:1.5" ${act('openNote', rel3[0] ? rel3[0].n.id : '')}><span class="dot"></span>관련된 생각 ${rel3.length}개 — 「${esc(rel3[0] ? titleOf(rel3[0].n.body) : '')}」${rel3.length > 1 ? ' 외' : ''}</div>`)}
-      <button class="btn" style="padding:15px;min-height:50px" ${act('dismiss')}>좋아요</button>`;
+      <div class="row g8"><button class="btn-o" style="flex:0 0 auto;min-height:50px;padding:12px 18px" ${act('reviseNote')}>다시 고치기</button><button class="btn" style="flex:1;padding:15px;min-height:50px" ${act('confirmNote')}>작성 완료</button></div>`;
     })();
-  return `<div class="sheet-wrap"><div class="sheet-bg" ${S.phase === 'done' ? act('dismiss') : ''}></div><div class="sheet" role="dialog" aria-label="저장 결과"><div class="handle"></div>${inner}</div></div>`;
+  return `<div class="sheet-wrap"><div class="sheet-bg"></div><div class="sheet" role="dialog" aria-label="저장 결과"><div class="handle"></div>${inner}</div></div>`;
 }
 
 function vLibrary(cs) {
@@ -960,17 +997,16 @@ function vLibrary(cs) {
     const header = `<div class="row between g8" style="align-items:baseline;padding-bottom:10px">
         <span class="serif" style="font-size:21px;font-weight:700">${oc.emoji} ${oc.name}의 목차</span>
         <span class="row g12" style="flex-shrink:0">
-          ${x(!oc.virtual, `<button class="link-accent" style="color:var(--ink-2);padding:6px 0" ${act('startEditCat', oc.key)}>수정</button>`)}
           <span style="font-size:13px;color:var(--accent);padding:6px 0" ${act('openCat', oc.key)}>전체 ${oc.count}편 →</span>
         </span>
       </div>`;
     const panel = S.catAdd ? vCatAddPanel() : editing ? vCatEditPanel(oc) + toc : header + toc;
     body = `<div class="stack g28">
     <div class="stack g8"><div class="shelf">
-      ${each(lib, c => `<button class="spine${!S.catAdd && c.key === openKey ? ' on' : ''}" style="width:${38 + Math.round(c.count / maxC * 20)}px;height:${130 + Math.round(c.count / maxC * 120)}px;background:${catColor(c.hue)}" ${act('shelf', c.key)} aria-label="${c.name} ${c.count}편"><span class="nm">${c.name}</span><span class="ct">${c.count}</span></button>`)}
+      ${each(lib, c => { const on = !S.catAdd && c.key === openKey; return `<div class="spine${on ? ' on' : ''}" role="button" tabindex="0" style="width:${38 + Math.round(c.count / maxC * 20)}px;height:${130 + Math.round(c.count / maxC * 120)}px;background:${catColor(c.hue)}" ${act('shelf', c.key)} aria-label="${c.name} ${c.count}편">${x(on && !c.virtual, `<div class="spine-tools"><button class="spine-tool" aria-label="${c.name} 분야 이름 바꾸기" title="이름 바꾸기" ${act('startEditCat', c.key)}>✏️</button><button class="spine-tool" aria-label="${c.name} 분야 삭제" title="삭제" ${act('quickDeleteCat', c.key)} ${getCats().length <= 1 ? 'disabled' : ''}>🗑️</button></div>`)}<span class="nm">${c.name}</span><span class="ct">${c.count}</span></div>`; })}
       ${x(canAdd, `<button class="spine add${S.catAdd ? ' on' : ''}" ${act('openCatAdd')} aria-label="새 분야 추가"><span class="plus">+</span><span class="nm">분야 추가</span></button>`)}
     </div><div class="shelf-board"></div>
-    <div class="shelf-hint">책을 누르면 목차가 열려요. ‘수정’으로 이름·삭제를, ＋ 책으로 새 분야를 꽂을 수 있어요.</div></div>
+    <div class="shelf-hint">책을 누르면 목차가 열리고, 책 위의 ✏️로 이름을, 🗑️로 분야를 지울 수 있어요. ＋ 책으로 새 분야를 꽂아요.</div></div>
     <div class="stack">${panel}</div></div>`;
   }
   else if (S.libView === 'card') body = `<div class="cards">${each(lib, c => `<div class="cat-card" ${act('openCat', c.key)}>
@@ -1139,8 +1175,10 @@ function vDetail(cs) {
     <div class="stack g4" style="min-width:0"><div class="serif" style="font-size:18px;font-weight:700;line-height:1.4">『${esc(n.book && n.book.title)}』</div><div style="font-size:13.5px;color:var(--ink-2);line-height:1.5">${esc(n.book ? bookMeta(n.book) : '')}</div></div>
   </div>`)}
   ${S.bodyEditing ? `<div class="stack g12">
-    <textarea class="edit-body" data-in="bodyDraft" data-kd="bodyDraft" aria-label="글 수정">${esc(S.bodyDraft)}</textarea>
+    <textarea class="edit-body" data-in="bodyDraft" data-kd="bodyDraft" aria-label="글 수정">${taText(S.bodyDraft)}</textarea>
     <div class="tag-edit">
+      <label class="row g10" style="font-size:14px;color:var(--ink-2)"><span class="label" style="letter-spacing:0.06em">작성 날짜</span>
+        <input type="date" class="field" style="flex:0 0 auto;min-height:40px;padding:6px 12px" max="${todayS()}" value="${esc(S.bodyDate || n.date)}" data-in="bodyDate" ${act('openDatePicker')}></label>
       <div class="label" style="letter-spacing:0.06em">태그</div>
       <div class="row g6 wrap">
         ${each(S.tagsDraft, t => `<button class="tag-chip" aria-label="태그 ${esc(t)} 지우기" ${act('removeTagDraft', t)}>#${esc(t)} <span>×</span></button>`)}
@@ -1375,6 +1413,7 @@ async function boot() {
   S.ready = true;
   history.replaceState(snapshot(), '');
   render();
+  showNextUnconfirmed();
   focusDraft();
   // 서재 보기 방식은 기억해 둔다
   let lastView = S.libView;

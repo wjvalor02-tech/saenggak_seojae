@@ -34,6 +34,7 @@ export const db = {
   allNotes: () => tx('notes', 'readonly', s => s.getAll()),
   putNote: n => tx('notes', 'readwrite', s => { s.put(n); }),
   putNotes: ns => tx('notes', 'readwrite', s => { ns.forEach(n => s.put(n)); }),
+  delNote: id => tx('notes', 'readwrite', s => { s.delete(id); }),
   clearNotes: () => tx('notes', 'readwrite', s => { s.clear(); }),
   get: k => tx('kv', 'readonly', s => s.get(k)),
   set: (k, v) => tx('kv', 'readwrite', s => { s.put(v, k); }),

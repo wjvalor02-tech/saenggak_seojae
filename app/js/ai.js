@@ -65,6 +65,7 @@ function explain(r) {
   if (r.status === 404) return 'AI 서버 함수(ai)가 Supabase에 배포돼 있지 않아요.';
   if (r.status === 429) return d || 'AI 사용 한도를 넘었어요. 내일 다시 정리할게요.';
   if (/GEMINI_API_KEY missing|ANTHROPIC_API_KEY missing/.test(d)) return 'Supabase에 AI 키(비밀값)가 설정돼 있지 않아요.';
+  if (/gemini 5\d\d/.test(d)) return `${task ? task + ' 중 ' : ''}Google Gemini 서버가 혼잡해서 기본 모델과 예비 모델 모두 응답하지 않았어요. 잠시 뒤 다시 정리할게요.`;
   if (/gemini 404/.test(d)) return `Gemini 모델을 찾을 수 없어요. AI_MODEL 비밀값을 확인해 주세요. (${d})`;
   if (/gemini 40[03]/.test(d)) return `Gemini가 요청을 거절했어요. 키·모델 권한을 확인해 주세요. (${d})`;
   if (/rate_limited/.test(d)) return 'AI 제공자의 무료 한도를 넘었어요. 잠시 뒤 다시 정리할게요.';

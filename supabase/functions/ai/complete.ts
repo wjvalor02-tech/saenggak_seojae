@@ -35,8 +35,8 @@ export async function completeJSON<T>(
     } catch (e) {
       lastErr = e;
       const msg = e instanceof Error ? e.message : String(e);
-      // 시간 초과·한도 초과·키 없음·모델 없음은 다시 해도 소용없다
-      if (/timeout|rate_limited|missing|gemini 4\d\d|refusal/.test(msg)) break;
+      // 시간 초과·한도 초과·키 없음·모델 없음·혼잡(예비 모델까지 이미 시도함)은 다시 해도 소용없다
+      if (/timeout|rate_limited|missing|gemini [45]\d\d|refusal/.test(msg)) break;
     }
   }
   throw lastErr;
