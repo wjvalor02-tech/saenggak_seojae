@@ -8,6 +8,9 @@ import { packVec, vecOf, toUnit, nearest, voteCategory, tagCandidates, appearsIn
 import { makeXlsx, makeDocx, download } from './export.js';
 
 // ───────────────────────── 상태 ─────────────────────────
+// 화면에 보이는 앱 버전(휴대폰이 새 버전을 받았는지 확인용). 배포할 때마다 바꾼다.
+const APP_VERSION = '2026.11.23-2';
+
 const S = {
   ready: false,
   w: window.innerWidth,
@@ -1194,7 +1197,7 @@ function vManage() {
     <div style="font-size:13.5px;color:var(--accent);display:flex;align-items:center;gap:8px"><span class="dot${st.state === 'syncing' ? ' pulse' : ''}"></span>${esc(s.user && s.user.email || '로그인됨')} · ${st.state === 'syncing' ? '맞추는 중…' : st.at ? `마지막 동기화 ${new Date(st.at).toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' })}` : '동기화 대기'}</div>
     ${x(st.error, `<div style="font-size:13px;color:var(--warn-ink)">${esc(st.error)}</div>`)}
     <div style="font-size:12.5px;color:var(--ink-3)">AI 정리 · 이번 달 ${calls}회 호출${S.lastProvider ? ` · ${S.lastProvider === 'anthropic' ? 'Claude' : 'Gemini'}` : ''}${S.aiLat && S.aiLat.length ? ` · 최근 글 분류 평균 ${(S.aiLat.reduce((a, b) => a + b, 0) / S.aiLat.length / 1000).toFixed(1)}초` : ''}</div>
-    ${(() => { const total = live().filter(n => !n.unconfirmed && n.body).length; const left = live().filter(n => !n.unconfirmed && n.body && !vecOf(n)).length; return x(total, `<div class="row between g8 wrap" style="font-size:13px;color:var(--ink-2)"><span>의미 분석 ${total - left}/${total}편${left ? ' · 남은 글은 동기화할 때 차례로 분석해요' : ' 완료'}</span>${x(left, `<button class="btn-o sm" style="min-height:38px;padding:6px 14px" ${act('embedNow')}>지금 분석</button>`)}</div>`); })()}
+    ${(() => { const total = live().filter(n => !n.unconfirmed && n.body).length; const left = live().filter(n => !n.unconfirmed && n.body && !vecOf(n)).length; return x(total, `<div class="row between g8 wrap" style="font-size:13px;color:var(--ink-2)"><span>의미 분석 ${total - left}/${total}편${left ? ' · 남은 글은 동기화할 때 차례로 분석해요' : ' 완료 ✓ (새 글은 저장할 때 바로 분석)'}</span>${x(left, `<button class="btn-o sm" style="min-height:38px;padding:6px 14px" ${act('embedNow')}>지금 분석</button>`)}</div>`); })()}
     ${x(S.aiError, `<div class="notice caution" style="font-size:12.5px"><span><b>AI 연결 문제</b> · ${esc(S.aiError)}</span></div>`)}
     ${(() => { const p = live().filter(n => n.aiPending && !n.userSorted).length; return x(p, `<div class="row between g8 wrap" style="font-size:13px;color:var(--ink-2)"><span>간단 규칙으로만 분류된 글 ${p}편</span><button class="btn-o sm" style="min-height:38px;padding:6px 14px" ${act('reclassifyAll')} ${S.reclassBusy ? 'disabled' : ''}>${S.reclassBusy ? '정리하는 중…' : 'AI로 다시 정리'}</button></div>`); })()}
   </div>`;
@@ -1223,6 +1226,7 @@ function vManage() {
       <div style="font-size:12.5px;color:var(--ink-3);line-height:1.6">앱으로 다시 불러올 수 있는 건 이 백업 파일(.json)뿐이에요. 엑셀·워드 파일은 불러올 수 없어요.</div>
     </div>
     ${x(sync.configured(), `<div style="font-size:12px;color:var(--ink-3);line-height:1.6">Gemini 무료 등급은 입력한 글이 서비스 개선에 쓰일 수 있어요. 육아·개인 기록이 많다면 유료 등급이나 Claude로 바꾸는 걸 권해요.</div>`)}
+    <div style="font-size:11.5px;color:var(--faint)">앱 버전 ${APP_VERSION}</div>
   </div>`;
 }
 
