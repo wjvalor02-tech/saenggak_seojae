@@ -1,6 +1,11 @@
 // Supabase Edge Function: POST /functions/v1/ai  { task, input }
-// task: classify | book | check | ask | weekly. 로그인한 사용자 토큰이 있어야 호출된다(verify_jwt 기본값).
+// task: classify | book | check | ask | weekly | embed. 로그인한 사용자 토큰이 있어야 호출된다(verify_jwt 기본값).
 import { completeJSON, provider } from "./complete.ts";
+import { DEEP_MODEL, FAST_MODEL, geminiEmbed } from "./providers/gemini.ts";
+
+// 작업별 모델·시간: 짧은 일은 빠른 모델 먼저, 한 모델이 attemptMs 안에 답이 없으면 다음 모델로
+const FAST = () => ({ models: [FAST_MODEL(), DEEP_MODEL()], attemptMs: 9000 });
+const DEEP = (attemptMs: number) => ({ models: [DEEP_MODEL(), FAST_MODEL()], attemptMs });
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -20,36 +25,40 @@ const tasks: Record<string, (input: Record<string, unknown>) => Promise<unknown>
     const keys = Array.isArray(input.keys) ? input.keys.map(String) : [];
     const vocab = str(input.vocab, 1200);
     const examples = str(input.examples, 2500);
+    const near = str(input.near, 2000); // 의미가 비슷한 내 글들의 분류(앱이 임베딩으로 찾아 보냄)
     const prompt = `너는 개인 생각 기록 앱의 분류기다. ${PROFILE}
 
 [분야 목록과 지금까지 자란 갈래] (형식: key(분야 이름): 갈래, 갈래…)
 ${str(input.taxonomy)}
-${vocab ? `\n[이 사용자가 이미 쓰는 태그] (같은 뜻이면 반드시 이 표기를 그대로 다시 쓴다)\n${vocab}\n` : ""}${examples ? `\n[사용자가 직접 고친 분류 예시] (이 사람의 기준이니 비슷한 글은 똑같이 분류한다)\n${examples}\n` : ""}
+${vocab ? `\n[이 사용자가 이미 쓰는 태그]\n${vocab}\n` : ""}${near ? `\n[이 글과 의미가 가장 비슷한 사용자의 글들과 그 분류] (비슷도 높은 순. 이 사람의 기준이니 크게 참고한다)\n${near}\n` : ""}${examples ? `\n[사용자가 직접 고친 분류 예시]\n${examples}\n` : ""}
 [분류할 글]
 """${str(input.text, 6000)}"""
 
 규칙
 1. cat: 위 분야 key 중 정확히 하나. 글의 '주된 목적'으로 고른다(예: 수업에서 쓸 책 이야기 → 수업, 개인적 감상 → 독서).
-2. sub: 기존 갈래 중 맞는 것이 있으면 그대로 쓴다. 정말 없을 때만 새 이름(2~6자, 명사)을 만든다. 성격이 다른 내용이 섞이면 둘을 아우르는 갈래(예: 근력+유산소)를 고른다.
-3. tags: 2~3개. 나중에 이 태그로 '비슷한 생각'을 다시 찾을 수 있도록, 글의 핵심 주제·개념·대상을 나타내는 띄어쓰기 없는 명사.
-   - 좋은 예: 학습부진, 사료학습, 역사적사고, 수면습관, 인터벌러닝
-   - 나쁜 예: 오늘, 생각, 수업(분야 이름과 같은 말), 했다, 좋았다, 날짜·감정어·동사·형용사
-   - 이미 쓰는 태그 중 뜻이 같은 것이 있으면 새로 만들지 말고 그것을 쓴다.
+2. sub: 기존 갈래 중 맞는 것이 있으면 그대로 쓴다. 정말 없을 때만 새 이름(2~6자, 명사)을 만든다.
+3. tags: 0~3개. 확실한 것만. 다음 둘 중 하나여야 한다:
+   (가) 글 본문에 실제로 나오는 핵심 낱말(띄어쓰기만 붙여 쓴 형태, 예: '역사적 사고' → 역사적사고)
+   (나) 위 '이미 쓰는 태그' 목록에 있는 태그(뜻이 같을 때)
+   - 글에 없는 일반어를 지어내지 않는다. 분야·갈래 이름과 같은 말, 날짜·감정어·동사·형용사는 쓰지 않는다.
+   - 맞는 것이 없으면 빈 배열.
 JSON만 출력: {"cat":"","sub":"","tags":[]}`;
-    return completeJSON(prompt, (j): j is unknown => isObj(j) && keys.includes(String(j.cat)) && !!j.sub && Array.isArray(j.tags), 25000, { effort: "low" });
+    // 답의 모양을 강제: cat은 반드시 분야 key 중 하나(엉뚱한 답 → 재시도·실패를 없앰)
+    const schema = { type: "object", properties: { cat: { type: "string", enum: keys }, sub: { type: "string" }, tags: { type: "array", items: { type: "string" }, maxItems: 3 } }, required: ["cat", "sub", "tags"] };
+    return completeJSON(prompt, (j): j is unknown => isObj(j) && keys.includes(String(j.cat)) && !!j.sub && Array.isArray(j.tags), 20000, { ...FAST(), schema });
   },
   book(input) {
     const cand = input.cand ? str(input.cand, 80) : "";
     const prompt = `다음 글에서 사용자가 읽고 있거나 언급한 책 한 권을 찾아 서지 정보를 알려줘.${cand ? ` 사용자가 표시한 제목: "${cand}".` : ""}\n글:\n"""${str(input.text, 800)}"""\n\n특정 책이 없거나 실제 존재하는 책인지 확신할 수 없으면 {"book":null}. 한국어판이 있으면 한국어판 기준(번역자·출판사·출간연도). 원서 출간연도는 originalYear. JSON만 출력: {"book":{"title":"","author":"","translator":"","publisher":"","year":"","originalYear":""}}`;
-    return completeJSON(prompt, (j): j is unknown => isObj(j) && "book" in j, 20000, { effort: "low" });
+    return completeJSON(prompt, (j): j is unknown => isObj(j) && "book" in j, 18000, FAST());
   },
   check(input) {
     const prompt = `너는 역사 교사이자 교육방법 전공 대학원생의 개인 메모를 읽는 꼼꼼한 검토자다. 아래 글에서 사실관계를 확인해 볼 필요가 있는 부분(연도·인물·사건·수치·인용문·연구 결과·학자 이름·책 정보 등)을 찾아라. 개인 경험·감정·의견·계획은 검토 대상이 아니다. 틀렸다고 확신할 때만 level을 "오류 가능"으로, 나머지는 "확인 권장"으로 한다. 사소한 것은 빼고 최대 5개. 없으면 빈 배열.\n글:\n"""${str(input.text, 3000)}"""\n\nJSON만 출력: {"checks":[{"quote":"글에서 해당 부분을 그대로 30자 이내로","level":"오류 가능 또는 확인 권장","issue":"무엇을 확인해야 하는지 한 문장","note":"알고 있는 사실이나 확인할 방법 한 문장"}]}`;
-    return completeJSON(prompt, (j): j is unknown => isObj(j) && Array.isArray(j.checks), 40000, { effort: "medium" });
+    return completeJSON(prompt, (j): j is unknown => isObj(j) && Array.isArray(j.checks), 40000, { ...DEEP(22000), effort: "medium" });
   },
   ask(input) {
     const prompt = `아래는 한 사람의 생각 기록이다.\n${str(input.ctx, 16000)}\n\n질문: "${str(input.q, 300)}"\n\n기록에 근거해 2~3문장으로, 본인에게 말하듯 존댓말로 답한다. 날짜를 '11월 10일'처럼 언급한다. 관련 기록 id를 최대 3개. JSON만 출력: {"answer":"","ids":[]}`;
-    return completeJSON(prompt, (j): j is unknown => isObj(j) && typeof j.answer === "string", 28000, { effort: "low" });
+    return completeJSON(prompt, (j): j is unknown => isObj(j) && typeof j.answer === "string", 25000, FAST());
   },
 
   // 주간 검토: 그 주의 생각 사이 연결고리·통찰 + 블로그 글감 하나
@@ -73,7 +82,15 @@ ${input.past ? `\n[참고: 지난 기록 제목들] (이번 주 생각과 이어
 - 공유할 만한 것이 정말 없으면 blog는 null.
 JSON만 출력:
 {"overview":"","connections":[{"ids":[],"title":"","insight":""}],"blog":{"title":"","hook":"","outline":[],"draft":"","tags":[],"sourceIds":[]}}`;
-    return completeJSON(prompt, (j): j is unknown => isObj(j) && typeof j.overview === "string" && Array.isArray(j.connections), 130000, { effort: "medium", maxTokens: 6000 });
+    return completeJSON(prompt, (j): j is unknown => isObj(j) && typeof j.overview === "string" && Array.isArray(j.connections), 130000, { ...DEEP(75000), effort: "medium", maxTokens: 6000 });
+  },
+
+  // 임베딩: 글의 의미를 숫자 묶음으로. '비슷한 글' 찾기(분류·태그 후보·관련 글)에 쓴다.
+  // 생성형 AI와 달리 글을 지어내지 않고 숫자만 계산해 빠르다. 제공자가 Claude여도 Gemini 키로 계산.
+  async embed(input) {
+    const texts = (Array.isArray(input.texts) ? input.texts : []).slice(0, 50).map((t) => str(t, 6000)).filter(Boolean);
+    if (!texts.length) return { vectors: [] };
+    return await geminiEmbed(texts, 20000);
   },
 };
 
@@ -86,25 +103,30 @@ Deno.serve(async (req) => {
   if (!fn || !isObj(body.input)) return json({ error: "bad task" }, 400);
 
   // 하루 호출 수 상한(비용 보호). 사용자 토큰으로 RPC를 불러 본인 행만 갱신한다.
+  // 기다리는 시간을 줄이려고 AI 호출과 동시에 시작한다(상한을 넘긴 드문 경우에만 결과를 버림).
+  // 임베딩(embed)은 아주 싸서 상한 계산에 넣지 않는다.
   const limit = Number(Deno.env.get("AI_DAILY_LIMIT") || 300);
-  let usedToday = 0;
-  try {
-    const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/rest/v1/rpc/bump_ai_usage`, {
-      method: "POST",
-      headers: { apikey: Deno.env.get("SUPABASE_ANON_KEY") ?? "", Authorization: req.headers.get("Authorization") ?? "", "Content-Type": "application/json" },
-      body: JSON.stringify({ p_task: body.task }),
-    });
-    if (r.ok) usedToday = Number(await r.json()) || 0;
-  } catch { /* 기록 실패는 무시 */ }
-  if (usedToday > limit) return json({ error: "daily_limit", detail: `하루 AI 호출 상한(${limit}회)을 넘었어요.` }, 429);
+  const usageP = body.task === "embed" ? Promise.resolve(0) : (async () => {
+    try {
+      const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/rest/v1/rpc/bump_ai_usage`, {
+        method: "POST",
+        headers: { apikey: Deno.env.get("SUPABASE_ANON_KEY") ?? "", Authorization: req.headers.get("Authorization") ?? "", "Content-Type": "application/json" },
+        body: JSON.stringify({ p_task: body.task }),
+      });
+      return r.ok ? Number(await r.json()) || 0 : 0;
+    } catch { return 0; } // 기록 실패는 무시
+  })();
 
+  const start = Date.now();
   try {
     const result = await fn(body.input);
-    return json({ result, provider: provider(), usage: usedToday });
+    const usedToday = await usageP;
+    if (usedToday > limit) return json({ error: "daily_limit", detail: `하루 AI 호출 상한(${limit}회)을 넘었어요.` }, 429);
+    return json({ result, provider: provider(), usage: usedToday, ms: Date.now() - start });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(body.task, msg);
+    console.error(body.task, msg, `${Date.now() - start}ms`);
     // 앱이 원인을 보여 줄 수 있게 짧은 이유를 함께 돌려준다(키 값 같은 비밀은 들어가지 않음)
-    return json({ error: "ai_failed", task: body.task, detail: `${body.task}: ${msg}`.slice(0, 240), provider: provider() }, 502);
+    return json({ error: "ai_failed", task: body.task, detail: `${body.task}: ${msg}`.slice(0, 240), provider: provider(), ms: Date.now() - start }, 502);
   }
 });

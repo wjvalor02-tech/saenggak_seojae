@@ -4,6 +4,7 @@ import { db, deriveCats, normalizeImport, clean, requestPersist } from './store.
 import { sync } from './sync.js';
 import { ai, nlScore, titleOf } from './ai.js';
 import { layoutNet } from './net.js';
+import { packVec, vecOf, toUnit, nearest, voteCategory, tagCandidates, appearsIn, cosine } from './sim.js';
 import { makeXlsx, makeDocx, download } from './export.js';
 
 // ───────────────────────── 상태 ─────────────────────────
@@ -161,6 +162,7 @@ const syncApi = {
 };
 async function runSync() {
   await sync.run(syncApi);
+  await embedMissing(); // 의미 분석이 먼저 있어야 다시 정리할 때 비슷한 글을 참고할 수 있다
   await reclassifyPending();
   maybeWeekly();
 }
@@ -178,6 +180,65 @@ function classifyHints(excludeId) {
   return { vocab, examples };
 }
 
+// ───────── 의미 유사도(임베딩) ─────────
+// 분류의 '정답 예시'로 믿을 수 있는 글: 확정됐고(작성 완료), 간단 규칙 분류가 아니거나 사용자가 직접 정한 글
+const labeled = () => live().filter(n => !n.unconfirmed && (!n.aiPending || n.userSorted));
+// 글 하나를 임베딩. 느리면 기다리지 않는다(분류를 막지 않음) → { vec, emb } 또는 null
+async function embedText(text, waitMs = 4000) {
+  if (!ai.available()) return null;
+  const r = await Promise.race([ai.embed([text]), new Promise(res => setTimeout(() => res(null), waitMs))]);
+  if (!r) return null;
+  return { vec: toUnit(r.vectors[0]), emb: packVec(r.vectors[0], r.model, text) };
+}
+// AI에게 보낼 '의미가 비슷한 내 글들의 분류' 설명
+function nearHint(neigh) {
+  return neigh.slice(0, 6).map(x => `- (비슷도 ${Math.round(x.sim * 100)}) "${x.n.body.replace(/\s+/g, ' ').slice(0, 110)}" → ${x.n.cat}(${catOf(x.n.cat).name})›${x.n.sub}${x.n.tags.length ? ' ' + x.n.tags.map(t => '#' + t).join(' ') : ''}`).join('\n');
+}
+// 비슷한 글들이 쓴 태그 중 이 글에 추천할 것(이미 단 것·지운 것은 빼고)
+function suggestTags(n, current = n.tags, limit = 4) {
+  const v = vecOf(n); if (!v) return [];
+  const neigh = nearest(v, labeled(), 8, n.id).filter(x => x.sim > 0.45);
+  return tagCandidates(neigh, [...current, ...(n.rejTags || [])]).slice(0, limit).map(x => x.t);
+}
+// 비슷한 글로 분류(AI가 늦거나 실패했을 때의 대안). 간단 규칙보다 이 사람의 기준을 잘 따른다
+function guessFromNeighbors(text, neigh, cs, book) {
+  const good = neigh.filter(x => x.sim > 0.45);
+  const vote = good.length >= 2 ? voteCategory(good) : null;
+  if (!vote || !cs.find(c => c.key === vote.cat)) return ai.guess(text, cs, book);
+  const tags = tagCandidates(good).filter(x => appearsIn(x.t, text)).slice(0, 2).map(x => x.t);
+  return { cat: vote.cat, sub: vote.sub || '생각', tags, aiPending: true, summary: titleOf(text), byNeighbors: true };
+}
+
+// 여러 글을 한꺼번에 저장(임베딩 채우기처럼 많은 글을 고칠 때 화면을 한 번만 갱신)
+async function writeMany(list) {
+  if (!list.length) return;
+  const now = new Date().toISOString();
+  const map = new Map(S.notes.map(n => [n.id, n]));
+  list.forEach(n => { n.updatedAt = now; n.dirty = true; map.set(n.id, n); });
+  set({ notes: [...map.values()] });
+  try { await db.putNotes(list); } catch (e) { /* 무시 */ }
+  scheduleSync();
+}
+// 아직 의미 분석이 안 됐거나(예전 글) 본문을 고쳐 낡은 글을 50편씩 분석
+let embedding = false;
+async function embedMissing(maxBatches = 20) {
+  if (embedding || !ai.available()) return;
+  embedding = true;
+  try {
+    for (let b = 0; b < maxBatches; b++) {
+      const todo = live().filter(n => !n.unconfirmed && n.body && !vecOf(n)).slice(0, 50);
+      set({ embLeft: live().filter(n => !n.unconfirmed && n.body && !vecOf(n)).length });
+      if (!todo.length) break;
+      const r = await ai.embed(todo.map(n => n.body), 30000);
+      if (!r) break; // 실패하면 다음 동기화 때 다시
+      await writeMany(todo.map((n, i) => ({ ...findNote(n.id) || n, emb: packVec(r.vectors[i], r.model, n.body) })));
+    }
+  } finally {
+    embedding = false;
+    set({ embLeft: live().filter(n => !n.unconfirmed && n.body && !vecOf(n)).length });
+  }
+}
+
 async function reclassifyPending(limit = 5) {
   if (reclassifying || !ai.available()) return 0;
   const pending = live().filter(n => n.aiPending && !n.userSorted && !n.unconfirmed).slice(0, limit);
@@ -186,7 +247,9 @@ async function reclassifyPending(limit = 5) {
   let done = 0;
   try {
     for (const n of pending) {
-      const r = await ai.classify(n.body, cats(), n.book, classifyHints(n.id));
+      const v = vecOf(n);
+      const hints = { ...classifyHints(n.id), near: v ? nearHint(nearest(v, labeled(), 6, n.id)) : '' };
+      const r = await ai.classify(n.body, cats(), n.book, hints);
       if (r.aiPending) break; // 아직 AI가 안 됨
       const cur = findNote(n.id);
       if (!cur || cur.userSorted) continue;
@@ -367,7 +430,12 @@ async function save() {
   await writeNote(draftNote);
 
   const before = cats();
-  const aiP = ai.classify(text, before, book, classifyHints(id));
+  const t0 = Date.now();
+  // ① 글의 의미를 숫자로(빠름, 최대 4초) → ② 내가 이미 분류한 글 중 의미가 가장 비슷한 글들을 찾는다
+  const emb = await embedText(text, 4000);
+  const neigh = emb ? nearest(emb.vec, labeled(), 8, id) : [];
+  // ③ AI는 그 비슷한 글들의 분류를 참고해서 분류한다(이 사람의 기준을 따르게)
+  const aiP = ai.classify(text, before, book, { ...classifyHints(id), near: nearHint(neigh) });
   // 분류 결과를 글에 적용. late=true(AI가 늦게 도착)일 때 사용자가 그새 분류·태그를 고쳤으면 건드리지 않는다
   const apply = async (r, late) => {
     const cur = S.notes.find(n => n.id === id);
@@ -377,31 +445,42 @@ async function save() {
     const c = cs.find(x => x.key === r.cat) || cs.find(x => x.key === 'daily') || cs[0];
     const isNew = !c.subs.some(s => s.name === r.sub);
     addBorn(c.key, r.sub);
+    let tags = r.tags || [];
+    // AI 태그가 모자라면, 비슷한 글들이 여러 번 쓴 태그 중 이 글에 실제로 나오는 것 하나를 더한다
+    if (!r.byNeighbors && tags.length < 3) {
+      const extra = tagCandidates(neigh.filter(x => x.sim > 0.5), tags).find(x => x.c >= 2 && appearsIn(x.t, text));
+      if (extra) tags = [...tags, extra.t];
+    }
     const { aiPending: _p, ...base } = cur;
-    await writeNote({ ...base, cat: c.key, sub: r.sub, tags: r.tags, summary: r.summary, ...(r.aiPending ? { aiPending: true } : {}), ...(r.aiProvider ? { aiProvider: r.aiProvider } : {}) });
+    await writeNote({ ...base, cat: c.key, sub: r.sub, tags, summary: r.summary, ...(emb ? { emb: emb.emb } : {}), ...(r.aiPending ? { aiPending: true } : {}), ...(r.aiProvider ? { aiProvider: r.aiProvider } : {}) });
     return isNew;
   };
-  const failNote = () => (sync.configured() && sync.session() ? `간단히 분류했어요. ${ai.lastError || 'AI 연결이 잠시 어려워요.'} 연결되면 다시 정리할게요.` : '');
+  const failNote = (byN) => (sync.configured() && sync.session()
+    ? (byN ? `AI 대신 비슷한 내 글들을 보고 분류했어요. 맞는지 확인해 주세요.${ai.lastError ? ` (${ai.lastError.replace(/ 잠시 뒤 다시 정리할게요.$/, '')})` : ''}` : `간단히 분류했어요. ${ai.lastError || 'AI 연결이 잠시 어려워요.'} 연결되면 다시 정리할게요.`)
+    : '');
 
-  // 시트는 8초까지만 기다린다. AI가 그 안에 오면 바로 보여 주고,
-  const quick = await Promise.race([aiP, new Promise(res => setTimeout(() => res(null), 8000))]);
+  // 시트는 저장 후 8초까지만 기다린다. AI가 그 안에 오면 바로 보여 주고,
+  const quick = await Promise.race([aiP, new Promise(res => setTimeout(() => res(null), Math.max(1500, 8000 - (Date.now() - t0))))]);
   if (quick) {
-    const isNew = await apply(quick, false);
-    // AI가 실패했으면 이유를 함께 알린다(예전엔 조용히 간단 분류만 해서 원인을 알 수 없었다)
-    set({ phase: 'done', resNew: !!isNew, resNote: quick.aiPending ? failNote() : '' });
+    // AI가 실패했으면 비슷한 글 기준 분류로 대신한다(간단 규칙보다 이 사람 기준에 가깝다)
+    const r0 = quick.aiPending ? guessFromNeighbors(text, neigh, before, book) : quick;
+    const isNew = await apply(r0, false);
+    set({ phase: 'done', resNew: !!isNew, resNote: r0.aiPending ? failNote(r0.byNeighbors) : '' });
     // 자동으로 닫지 않는다: 사용자가 '작성 완료'를 눌러야 확정
     return;
   }
-  // 늦으면 간단 분류로 먼저 보여 주고, AI 결과가 도착하면 저절로 바꾼다(다음 글을 바로 쓸 수 있게)
-  const isNew = await apply(ai.guess(text, before, book), false);
+  // 늦으면 비슷한 글 기준 분류(없으면 간단 분류)로 먼저 보여 주고, AI 결과가 도착하면 저절로 바꾼다
+  const g = guessFromNeighbors(text, neigh, before, book);
+  const isNew = await apply(g, false);
   set({ phase: 'done', resNew: !!isNew, resNote: 'AI가 아직 정리하는 중이에요. 끝나면 분류와 태그가 저절로 바뀌어요.' });
 
   const r = await aiP;
   const here = () => S.resId === id && S.phase === 'done';
-  if (r.aiPending) { if (here()) set({ resNote: failNote() }); return; }
+  if (r.aiPending) { if (here()) set({ resNote: failNote(g.byNeighbors) }); return; }
   const changed = await apply(r, true);
   if (changed !== null && here()) set({ resNew: changed, resNote: 'AI가 정리를 마쳤어요.' });
 }
+
 // (예전엔 4초 뒤 시트가 저절로 닫혀 확인하기 전에 저장된 것처럼 보였다 → 이제 '작성 완료'를 눌러야 닫힌다)
 
 // '작성 완료': 확정하고 동기화 대상으로 올린다
@@ -481,10 +560,12 @@ function saveBody(id) {
     // 목록 제목은 AI 요약 대신 글의 첫 문장(본문이 바뀌면 같이 바뀜)
     summary: titleOf(body),
     ...(body !== n.body || tagsChanged ? { edited: todayS() } : {}),
-    // 직접 고친 태그는 나중에 AI가 다시 정리할 때 덮어쓰지 않는다
-    ...(tagsChanged ? { userSorted: true } : {}),
+    // 직접 고친 태그는 나중에 AI가 다시 정리할 때 덮어쓰지 않는다. 지운 태그는 다시 추천하지 않는다.
+    ...(tagsChanged ? { userSorted: true, rejTags: [...new Set([...(n.rejTags || []), ...n.tags.filter(t => !tags.includes(t))])].filter(t => !tags.includes(t)) } : {}),
   });
   set({ bodyEditing: false, newTagDraft: '' });
+  // 본문이 바뀌었으면 의미를 다시 계산(비슷한 글 찾기에 반영)
+  if (body !== n.body) setTimeout(() => embedMissing(1), 300);
 }
 function deleteNote(id) {
   if (!confirm('이 글을 삭제할까요? 되돌릴 수 없어요.' + (sync.session() ? ' 동기화된 다른 기기에서도 지워져요.' : ''))) return;
@@ -658,7 +739,10 @@ const A = {
   pickCat: (a, el) => { const id = el.dataset.id; const n = findNote(id); if (!n || n.cat === a) return; const c = cats().find(x => x.key === a); setCatSub(id, a, c.subs[0] ? c.subs[0].name : '일반'); },
   pickSub: (a, el) => { const n = findNote(el.dataset.id); if (n) setCatSub(n.id, n.cat, a); },
   addSub: a => addSub(a),
-  removeTag: (a, el) => { const n = findNote(el.dataset.id); if (n) patch(n.id, { tags: n.tags.filter(t => t !== a), userSorted: true }); },
+  // 지운 태그는 이 글에 다시 추천하지 않도록 기억(rejTags)
+  removeTag: (a, el) => { const n = findNote(el.dataset.id); if (n) patch(n.id, { tags: n.tags.filter(t => t !== a), rejTags: [...new Set([...(n.rejTags || []), a])], userSorted: true }); },
+  addSuggTag: (a, el) => { const n = findNote(el.dataset.id); if (n && !n.tags.includes(a)) patch(n.id, { tags: [...n.tags, a].slice(0, 8), userSorted: true }); },
+  addTagDraftSugg: a => { if (!S.tagsDraft.includes(a) && S.tagsDraft.length < 8) set({ tagsDraft: [...S.tagsDraft, a] }); },
   libView: a => set({ libView: a }),
   shelf: a => set({ shelfKey: a, catAdd: false, catEdit: S.catEdit === a ? a : null, delCat: null, catErr: null }),
   subFilter: a => set({ subFilter: a || null }),
@@ -673,6 +757,7 @@ const A = {
   syncNow: () => runSync(),
   exportXlsx: () => exportXlsx(), exportDocx: () => exportDocx(),
   reclassifyAll: () => reclassifyAll(),
+  embedNow: async () => { if (!ai.available()) { toast(ai.lastError || '로그인하고 온라인일 때 쓸 수 있어요.'); return; } toast('글의 의미를 분석하고 있어요…'); await embedMissing(); toast(S.embLeft ? (ai.lastError || '일부만 분석했어요. 잠시 뒤 다시 해 주세요.') : '모든 글의 의미 분석을 마쳤어요.'); },
   // 주간 돌아보기
   weeklyNow: () => makeWeekly(mondayOf(todayS()), { manual: true }),
   weeklyRedo: a => { if (confirm('이 주의 돌아보기를 새로 만들까요? 지금 내용은 바뀌어요.')) makeWeekly(a, { manual: true }); },
@@ -938,11 +1023,22 @@ function vEditor(n, cs, filled) {
   </div>`;
 }
 
+// 관련된 생각: 두 글 모두 의미 분석이 돼 있으면 '뜻이 얼마나 비슷한가'로, 아니면 예전처럼 같은 태그·갈래로 찾는다.
+// (태그가 달라도 내용이 비슷하면 이어지고, 태그만 같고 내용이 다르면 뒤로 밀린다)
+const REL_MIN = 0.62; // 이보다 덜 비슷하면 '관련'으로 보지 않는다(실제 써 보며 조정할 값)
 function related(dn) {
-  return live().filter(n => n.id !== dn.id).map(n => {
+  const v = vecOf(dn);
+  return live().filter(n => n.id !== dn.id && !n.unconfirmed && !n.kind).map(n => {
     const shared = n.tags.filter(t => dn.tags.includes(t)); const sameSub = n.cat === dn.cat && n.sub === dn.sub;
-    return { n, score: shared.length * 2 + (sameSub ? 1 : 0), reason: shared.length ? `같은 태그 #${shared[0]}` : `같은 갈래 · ${n.sub}` };
-  }).filter(r => r.score > 0).sort((a, b) => b.score - a.score || b.n.date.localeCompare(a.n.date));
+    const w = v ? vecOf(n) : null;
+    if (v && w) {
+      const sim = cosine(v, w);
+      const score = sim + shared.length * 0.03;
+      return { n, score, sim, reason: sim >= REL_MIN ? (shared.length ? `비슷한 내용 · #${shared[0]}` : '비슷한 내용') : `같은 태그 #${shared[0] || ''}`, ok: sim >= REL_MIN || (shared.length >= 2 && sim >= 0.5) };
+    }
+    const score = shared.length * 2 + (sameSub ? 1 : 0);
+    return { n, score: score / 10, reason: shared.length ? `같은 태그 #${shared[0]}` : `같은 갈래 · ${n.sub}`, ok: score > 0 };
+  }).filter(r => r.ok).sort((a, b) => b.score - a.score || b.n.date.localeCompare(a.n.date));
 }
 
 function vSheet(cs) {
@@ -962,6 +1058,7 @@ function vSheet(cs) {
           ${each(n.tags, t => `<button class="tag-chip" ${act('removeTag', t, idA)}>#${esc(t)} <span>×</span></button>`)}
           <input class="dashed" placeholder="+ 추가" value="${esc(S.newTag)}" data-in="newTag" data-kd="newTag">
         </div>
+        ${(() => { const sg = suggestTags(n); return x(sg.length, `<div class="row g6 wrap sugg-row"><span class="sugg-label">비슷한 글의 태그</span>${each(sg, t => `<button class="sugg-chip" ${act('addSuggTag', t, idA)}>+ #${esc(t)}</button>`)}</div>`); })()}
         ${n.book ? `<div style="font-size:14px;line-height:1.5">📖 『${esc(n.book.title)}』 <span style="color:var(--ink-2)">${esc(bookMeta(n.book))}</span></div>` : ''}
         ${x(n.checks && n.checks.length, `<div style="font-size:13px;color:var(--caution)">확인할 내용 ${(n.checks || []).length}개를 글에 함께 남겼어요.</div>`)}
         ${x(S.resNote, `<div style="font-size:13px;color:var(--ink-3)">${esc(S.resNote)}</div>`)}
@@ -1096,7 +1193,8 @@ function vManage() {
   else syncBlock = `<div class="stack g8">
     <div style="font-size:13.5px;color:var(--accent);display:flex;align-items:center;gap:8px"><span class="dot${st.state === 'syncing' ? ' pulse' : ''}"></span>${esc(s.user && s.user.email || '로그인됨')} · ${st.state === 'syncing' ? '맞추는 중…' : st.at ? `마지막 동기화 ${new Date(st.at).toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' })}` : '동기화 대기'}</div>
     ${x(st.error, `<div style="font-size:13px;color:var(--warn-ink)">${esc(st.error)}</div>`)}
-    <div style="font-size:12.5px;color:var(--ink-3)">AI 정리 · 이번 달 ${calls}회 호출${S.lastProvider ? ` · ${S.lastProvider === 'anthropic' ? 'Claude' : 'Gemini'}` : ''}</div>
+    <div style="font-size:12.5px;color:var(--ink-3)">AI 정리 · 이번 달 ${calls}회 호출${S.lastProvider ? ` · ${S.lastProvider === 'anthropic' ? 'Claude' : 'Gemini'}` : ''}${S.aiLat && S.aiLat.length ? ` · 최근 글 분류 평균 ${(S.aiLat.reduce((a, b) => a + b, 0) / S.aiLat.length / 1000).toFixed(1)}초` : ''}</div>
+    ${(() => { const total = live().filter(n => !n.unconfirmed && n.body).length; const left = live().filter(n => !n.unconfirmed && n.body && !vecOf(n)).length; return x(total, `<div class="row between g8 wrap" style="font-size:13px;color:var(--ink-2)"><span>의미 분석 ${total - left}/${total}편${left ? ' · 남은 글은 동기화할 때 차례로 분석해요' : ' 완료'}</span>${x(left, `<button class="btn-o sm" style="min-height:38px;padding:6px 14px" ${act('embedNow')}>지금 분석</button>`)}</div>`); })()}
     ${x(S.aiError, `<div class="notice caution" style="font-size:12.5px"><span><b>AI 연결 문제</b> · ${esc(S.aiError)}</span></div>`)}
     ${(() => { const p = live().filter(n => n.aiPending && !n.userSorted).length; return x(p, `<div class="row between g8 wrap" style="font-size:13px;color:var(--ink-2)"><span>간단 규칙으로만 분류된 글 ${p}편</span><button class="btn-o sm" style="min-height:38px;padding:6px 14px" ${act('reclassifyAll')} ${S.reclassBusy ? 'disabled' : ''}>${S.reclassBusy ? '정리하는 중…' : 'AI로 다시 정리'}</button></div>`); })()}
   </div>`;
@@ -1185,6 +1283,7 @@ function vDetail(cs) {
         ${S.tagsDraft.length < 8 ? `<input class="dashed w" placeholder="+ 태그 추가" aria-label="태그 추가" value="${esc(S.newTagDraft)}" data-in="newTagDraft" data-kd="newTagDraft">
         ${x(S.newTagDraft.trim(), `<button class="chip ink on" ${act('addTagDraft')}>추가</button>`)}` : ''}
       </div>
+      ${(() => { const sg = suggestTags(n, S.tagsDraft); return x(sg.length, `<div class="row g6 wrap sugg-row"><span class="sugg-label">비슷한 글의 태그</span>${each(sg, t => `<button class="sugg-chip" ${act('addTagDraftSugg', t)}>+ #${esc(t)}</button>`)}</div>`); })()}
       <div style="font-size:12px;color:var(--ink-3)">×를 누르면 지워지고, 새 태그는 쓰고 Enter(또는 쉼표·띄어쓰기). 최대 8개.</div>
     </div>
     <div class="row between g8 wrap">
@@ -1379,10 +1478,14 @@ function vSearch() {
 // ───────────────────────── 시작 ─────────────────────────
 async function boot() {
   requestPersist();
-  ai.onUsage = r => {
+  ai.onUsage = (r, task) => {
+    if (task === 'embed') return; // 의미 분석은 아주 가벼워 호출 수에 넣지 않는다
     const m = monthKey();
     const aiUsage = { ...S.aiUsage, [m]: (S.aiUsage[m] || 0) + 1 };
-    set({ aiUsage, lastProvider: r.provider }); db.set('aiUsage', aiUsage);
+    // 글 분류에 걸린 시간을 최근 10번만 기억(빨라졌는지 확인용)
+    const aiLat = task === 'classify' && r.ms ? [...(S.aiLat || []), r.ms].slice(-10) : S.aiLat;
+    set({ aiUsage, lastProvider: r.provider, aiLat }); db.set('aiUsage', aiUsage);
+    if (aiLat !== S.aiLat || task === 'classify') db.set('aiLat', aiLat);
   };
   ai.onError = msg => set({ aiError: msg });
   let hadSession = false;
@@ -1400,7 +1503,8 @@ async function boot() {
     render();
   });
   try {
-    const [notes, subBorn, lastExport, aiUsage, libView, landingDone, catsRec] = await Promise.all([db.allNotes(), db.get('subBorn'), db.get('lastExport'), db.get('aiUsage'), db.get('libView'), db.get('landingDone'), db.get('cats')]);
+    const [notes, subBorn, lastExport, aiUsage, libView, landingDone, catsRec, aiLat] = await Promise.all([db.allNotes(), db.get('subBorn'), db.get('lastExport'), db.get('aiUsage'), db.get('libView'), db.get('landingDone'), db.get('cats'), db.get('aiLat')]);
+    S.aiLat = Array.isArray(aiLat) ? aiLat : [];
     Object.assign(S, { notes: notes || [], subBorn: subBorn || {}, lastExport: lastExport || null, aiUsage: aiUsage || {}, libView: libView || 'shelf', landingDone: !!landingDone });
     if (catsRec && Array.isArray(catsRec.list)) { setCats(catsRec.list); Object.assign(S, { catsAt: catsRec.updatedAt || null, catsDirty: !!catsRec.dirty }); }
   } catch (e) {

@@ -245,3 +245,9 @@ h1.title { margin: 0; font-family: var(--serif); font-size: 34px; font-weight: 7
 
 .toast { position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--ink); color: #FBF9F5; font-size: 13.5px; padding: 10px 16px; border-radius: 999px; z-index: 60; animation: fade .2s; max-width: calc(100% - 32px); }
 @media (min-width: 900px) { .toast { bottom: 32px; } }
+
+/* 비슷한 글에서 온 추천 태그(눌러야 붙음) */
+.sugg-row { align-items: center; }
+.sugg-label { font-size: 12px; color: var(--ink-3); margin-right: 2px; }
+.sugg-chip { border: 1px dashed var(--accent); background: transparent; color: var(--accent); border-radius: 999px; padding: 6px 11px; font-size: 12.5px; cursor: pointer; }
+.sugg-chip:hover { background: var(--accent-bg); }

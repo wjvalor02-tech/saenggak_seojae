@@ -3,6 +3,7 @@
 // 실패하면 이유(lastError)를 남겨 서재 화면에 보여 준다.
 import { sync } from './sync.js';
 import { catOf } from './util.js';
+import { appearsIn } from './sim.js';
 
 export const TAG_RULES = [[/달리|러닝|km|조깅/, '러닝'], [/스쿼트|근력|PT|헬스/, '근력운동'], [/부진/, '학습부진'], [/중재/, '중재연구'], [/사료/, '사료학습'], [/연표|연대/, '연대기'], [/루브릭/, '루브릭'], [/서술형|채점/, '서술형평가'], [/도입 ?활동/, '도입활동'], [/시간 ?개념/, '시간개념'], [/단어|언어|말을 /, '언어발달'], [/인물/, '인물학습'], [/사고력|역사적 ?사고/, '역사적사고'], [/기초선/, '기초선'], [/발문/, '발문'], [/모둠|협동/, '모둠활동'], [/잠자리|재우/, '수면습관'], [/조선/, '조선'], [/고려/, '고려'], [/근대|개항/, '근대']];
 
@@ -47,7 +48,7 @@ async function call(task, input, timeoutMs = 18000) {
   try {
     const r = await sync.invokeAI({ task, input }, timeoutMs);
     if (r && r.failed) { ai.setError(explain(r)); return null; }
-    if (r && r.result) { ai.setError(null); if (r.usage != null && ai.onUsage) ai.onUsage(r); return r; }
+    if (r && r.result) { ai.setError(null); if (ai.onUsage) ai.onUsage(r, task); return r; }
     ai.setError('AI 응답을 읽지 못했어요.');
     return null;
   } catch (e) {
@@ -55,7 +56,7 @@ async function call(task, input, timeoutMs = 18000) {
     return null;
   }
 }
-const TASK_NAME = { classify: '글 분류', book: '책 찾기', check: 'AI 검토', ask: '물어보기', weekly: '주간 돌아보기' };
+const TASK_NAME = { classify: '글 분류', book: '책 찾기', check: 'AI 검토', ask: '물어보기', weekly: '주간 돌아보기', embed: '의미 분석' };
 function explain(r) {
   const d = String(r.detail || '');
   const task = TASK_NAME[r.task] || TASK_NAME[d.split(':')[0]] || '';
@@ -79,9 +80,16 @@ export const ai = {
   setError(msg) { if (this.lastError !== msg) { this.lastError = msg; this.onError && this.onError(msg); } },
   available: () => sync.canUseAI(),
 
+  // 글들의 의미 숫자 묶음(임베딩). 실패하면 null
+  async embed(texts, timeoutMs = 25000) {
+    const r = await call('embed', { texts: texts.map(t => String(t).slice(0, 6000)) }, timeoutMs);
+    if (!r || !Array.isArray(r.result.vectors) || r.result.vectors.length !== texts.length) return null;
+    return { vectors: r.result.vectors, model: r.result.model };
+  },
+
   // → { cat, sub, tags, summary, aiPending?, aiProvider? }
   // summary는 AI 요약이 아니라 글에서 뽑은 제목(목록·검색에 쓰임)
-  // hints: { vocab: 자주 쓰는 태그 목록, examples: 사용자가 직접 고친 분류 예시 }
+  // hints: { vocab: 자주 쓰는 태그 목록, examples: 사용자가 직접 고친 분류 예시, near: 의미가 비슷한 내 글들의 분류 }
   async classify(text, cats, book, hints = {}) {
     const r = await this._classify(text, cats, book, hints);
     r.summary = titleOf(text);
@@ -91,15 +99,18 @@ export const ai = {
   async _classify(text, cats, book, hints) {
     const taxonomy = cats.map(c => `${c.key}(${c.name}): ${c.subs.map(s => s.name).join(', ') || '(아직 없음)'}`).join('\n');
     const bookLine = book ? `[이 글은 책 『${book.title}』${book.author ? `(${book.author})` : ''}에 관한 기록]\n` : '';
-    const r = await call('classify', { text: bookLine + text, taxonomy, keys: cats.map(c => c.key), vocab: hints.vocab || '', examples: hints.examples || '' }, 30000);
+    const r = await call('classify', { text: bookLine + text, taxonomy, keys: cats.map(c => c.key), vocab: hints.vocab || '', examples: hints.examples || '', near: hints.near || '' }, 25000);
     if (r) {
       const j = r.result;
       if (cats.find(c => c.key === j.cat) && j.sub && Array.isArray(j.tags)) {
-        const catName = (cats.find(c => c.key === j.cat) || {}).name;
+        const c = cats.find(x => x.key === j.cat) || {};
+        const vocab = new Set(String(hints.vocab || '').split(/,\s*/).filter(Boolean));
+        const banned = new Set([c.name, String(j.sub).trim(), ...cats.map(x => x.name)]);
         return {
           cat: j.cat, sub: String(j.sub).trim().slice(0, 12),
-          // 분야 이름과 같은 태그·한 글자 태그는 걸러 낸다
-          tags: [...new Set(j.tags.map(t => String(t).replace(/^#/, '').replace(/\s/g, '')).filter(t => t.length >= 2 && t !== catName))].slice(0, 3),
+          // 태그 검사: 글에 실제로 나오거나 이미 쓰던 태그만 남긴다(AI가 지어낸 일반어는 버림)
+          tags: [...new Set(j.tags.map(t => String(t).replace(/^#/, '').replace(/\s/g, '')))]
+            .filter(t => t.length >= 2 && !banned.has(t) && (vocab.has(t) || appearsIn(t, text))).slice(0, 3),
           aiProvider: r.provider,
         };
       }
