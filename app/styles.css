@@ -251,3 +251,25 @@ h1.title { margin: 0; font-family: var(--serif); font-size: 34px; font-weight: 7
 .sugg-label { font-size: 12px; color: var(--ink-3); margin-right: 2px; }
 .sugg-chip { border: 1px dashed var(--accent); background: transparent; color: var(--accent); border-radius: 999px; padding: 6px 11px; font-size: 12.5px; cursor: pointer; }
 .sugg-chip:hover { background: var(--accent-bg); }
+
+/* 생각 지도(의미) */
+.tmap { position: relative; height: clamp(340px, 92vw, 520px); margin: 0 -6px; background: radial-gradient(circle at 50% 45%, rgba(47, 90, 75, 0.04), transparent 70%); border-radius: 14px; }
+.tmap svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.tdot { position: absolute; width: 14px; height: 14px; border-radius: 50%; transform: translate(-50%, -50%); border: 2px solid var(--surface); padding: 0; cursor: pointer; transition: opacity .2s, transform .15s; box-shadow: 0 1px 3px rgba(43, 39, 34, 0.25); }
+.tdot::after { content: ''; position: absolute; inset: -12px; } /* 손가락으로 누르기 쉽게 터치 영역 넓힘 */
+.tdot:hover { transform: translate(-50%, -50%) scale(1.25); }
+.tdot.sel { width: 20px; height: 20px; box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--ink); z-index: 3; }
+.tisl { position: absolute; transform: translate(-50%, -100%); border: none; background: rgba(251, 249, 245, 0.92); border-radius: 999px; padding: 3px 10px; font-family: var(--serif); font-size: 13px; font-weight: 700; color: var(--ink-2); white-space: nowrap; box-shadow: 0 1px 4px rgba(43, 39, 34, 0.1); cursor: pointer; z-index: 2; transition: opacity .2s; }
+.tisl.on { background: var(--ink); color: #FBF9F5; }
+.tpanel { border-top: 1px solid var(--line); padding-top: 12px; }
+.tpanel-title { text-align: left; border: none; background: none; padding: 2px 0; font-size: 17px; line-height: 1.5; color: var(--ink); cursor: pointer; }
+
+/* 이어지는 생각 + 잇기 */
+.sheet-rel { border-top: 1px solid var(--line); padding-top: 12px; }
+.rel-mini { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rel-mini-open { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: baseline; text-align: left; border: none; background: none; padding: 6px 0; font-size: 13.5px; color: var(--ink); cursor: pointer; }
+.rel-mini-open .reason { flex-shrink: 0; font-size: 11.5px; }
+.rel-mini-open .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-btn { flex-shrink: 0; border: 1px solid var(--line-strong); background: transparent; color: var(--ink-2); border-radius: 999px; padding: 5px 11px; font-size: 12.5px; cursor: pointer; }
+.link-btn.on { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+.reason.linked { background: var(--accent); color: #FBF9F5; }

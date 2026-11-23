@@ -1,5 +1,5 @@
 // Supabase Edge Function: POST /functions/v1/ai  { task, input }
-// task: classify | book | check | ask | weekly | embed. 로그인한 사용자 토큰이 있어야 호출된다(verify_jwt 기본값).
+// task: classify | book | check | ask | weekly | islands | embed. 로그인한 사용자 토큰이 있어야 호출된다(verify_jwt 기본값).
 import { completeJSON, provider } from "./complete.ts";
 import { DEEP_MODEL, FAST_MODEL, geminiEmbed } from "./providers/gemini.ts";
 
@@ -67,7 +67,7 @@ JSON만 출력: {"cat":"","sub":"","tags":[]}`;
 
 [이번 주(${str(input.range, 40)}) 기록] (형식: [id] 날짜 | 분야›갈래 | #태그 | 본문)
 ${str(input.week, 24000)}
-${input.past ? `\n[참고: 지난 기록 제목들] (이번 주 생각과 이어지는 게 있을 때만 언급)\n${str(input.past, 4000)}\n` : ""}
+${input.past ? `\n[참고: 지난 기록 제목들] (이번 주 생각과 이어지는 게 있을 때만 언급)\n${str(input.past, 4000)}\n` : ""}${input.pairs ? `\n[참고: 내용의 의미가 가까운 기록 쌍] (앱이 의미 분석으로 찾은 후보. 다른 분야끼리 가까운 쌍을 특히 살펴보되, 진짜 연결일 때만 쓴다)\n${str(input.pairs, 3000)}\n` : ""}${input.links ? `\n[사용자가 직접 이은 기록 쌍] (본인이 연결을 느낀 것. 왜 이어지는지 풀어 줄 만하다)\n${str(input.links, 1500)}\n` : ""}
 할 일 1 — 생각의 연결고리
 - 서로 다른 날·다른 분야의 기록 사이에서, 본인이 미처 의식하지 못했을 수 있는 연결을 최대 3개 찾는다.
 - 같은 태그라서 묶이는 뻔한 연결보다, 다른 분야끼리 같은 질문·패턴·긴장을 공유하는 연결을 우선한다(예: 아이의 언어 발달 관찰 ↔ 학습부진 학생 중재).
@@ -87,6 +87,23 @@ JSON만 출력:
 
   // 임베딩: 글의 의미를 숫자 묶음으로. '비슷한 글' 찾기(분류·태그 후보·관련 글)에 쓴다.
   // 생성형 AI와 달리 글을 지어내지 않고 숫자만 계산해 빠르다. 제공자가 Claude여도 Gemini 키로 계산.
+  // 생각 지도의 '주제 섬' 이름 짓기: 무리마다 글 제목 몇 개를 보고 짧은 이름
+  islands(input) {
+    const groups = (Array.isArray(input.groups) ? input.groups : []).slice(0, 8).map((g, i) => {
+      const titles = (Array.isArray((g as any).titles) ? (g as any).titles : []).slice(0, 8).map((t: unknown) => `  - ${str(t, 80)}`).join("\n");
+      return `무리 ${i + 1}:\n${titles}`;
+    }).join("\n\n");
+    const n = Math.min(8, Array.isArray(input.groups) ? input.groups.length : 0);
+    const prompt = `아래는 한 사람의 생각 기록을 내용이 비슷한 것끼리 묶은 무리들이다. ${PROFILE}
+무리마다 그 무리를 관통하는 주제를 2~8자의 짧은 이름으로 붙여라. 분야 이름(연구·수업·독서·육아·일상·운동)을 그대로 쓰지 말고 더 구체적으로(예: '관찰과 측정', '짧게 쓰기', '아침 루틴'). 무리 순서대로 ${n}개.
+
+${groups}
+
+JSON만 출력: {"names":["", ...]}`;
+    const schema = { type: "object", properties: { names: { type: "array", items: { type: "string" } } }, required: ["names"] };
+    return completeJSON(prompt, (j): j is unknown => isObj(j) && Array.isArray(j.names), 18000, { ...FAST(), schema });
+  },
+
   async embed(input) {
     const texts = (Array.isArray(input.texts) ? input.texts : []).slice(0, 50).map((t) => str(t, 6000)).filter(Boolean);
     if (!texts.length) return { vectors: [] };

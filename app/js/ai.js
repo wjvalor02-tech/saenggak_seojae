@@ -56,7 +56,7 @@ async function call(task, input, timeoutMs = 18000) {
     return null;
   }
 }
-const TASK_NAME = { classify: '글 분류', book: '책 찾기', check: 'AI 검토', ask: '물어보기', weekly: '주간 돌아보기', embed: '의미 분석' };
+const TASK_NAME = { classify: '글 분류', book: '책 찾기', check: 'AI 검토', ask: '물어보기', weekly: '주간 돌아보기', embed: '의미 분석', islands: '주제 섬 이름' };
 function explain(r) {
   const d = String(r.detail || '');
   const task = TASK_NAME[r.task] || TASK_NAME[d.split(':')[0]] || '';
@@ -79,6 +79,13 @@ export const ai = {
   lastError: null,
   setError(msg) { if (this.lastError !== msg) { this.lastError = msg; this.onError && this.onError(msg); } },
   available: () => sync.canUseAI(),
+
+  // 생각 지도의 주제 섬 이름. groups: [{ titles: [...] }] → ['이름', ...] 또는 null
+  async nameIslands(groups) {
+    const r = await call('islands', { groups }, 22000);
+    if (!r || !Array.isArray(r.result.names)) return null;
+    return r.result.names.map(s => String(s).replace(/[<>&"'`]/g, '').trim().slice(0, 12));
+  },
 
   // 글들의 의미 숫자 묶음(임베딩). 실패하면 null
   async embed(texts, timeoutMs = 25000) {
@@ -158,10 +165,11 @@ export const ai = {
   },
 
   // 주간 검토: { overview, connections:[{ids,title,insight}], blog:{title,hook,outline,draft,tags,sourceIds}|null }
-  async weekly(weekNotes, pastNotes, range) {
+  // extra: { pairs: 의미가 가까운 기록 쌍(글자), links: 사용자가 직접 이은 쌍(글자) }
+  async weekly(weekNotes, pastNotes, range, extra = {}) {
     const week = weekNotes.map(n => `[${n.id}] ${n.date} | ${catOf(n.cat).name}›${n.sub} | ${n.tags.map(t => '#' + t).join(' ')} | ${n.body.slice(0, 1200).replace(/\n+/g, ' ')}`).join('\n');
     const past = pastNotes.map(n => `[${n.id}] ${n.date} | ${catOf(n.cat).name} | ${titleOf(n.body)} | ${n.tags.map(t => '#' + t).join(' ')}`).join('\n');
-    const r = await call('weekly', { week, past, range }, 145000);
+    const r = await call('weekly', { week, past, range, pairs: extra.pairs || '', links: extra.links || '' }, 145000);
     if (!r) return null;
     const j = r.result;
     const ids = new Set([...weekNotes, ...pastNotes].map(n => n.id));

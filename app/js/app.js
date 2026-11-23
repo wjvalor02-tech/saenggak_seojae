@@ -5,11 +5,12 @@ import { sync } from './sync.js';
 import { ai, nlScore, titleOf } from './ai.js';
 import { layoutNet } from './net.js';
 import { packVec, vecOf, toUnit, nearest, voteCategory, tagCandidates, appearsIn, cosine } from './sim.js';
+import { buildMap } from './mapgraph.js';
 import { makeXlsx, makeDocx, download } from './export.js';
 
 // ───────────────────────── 상태 ─────────────────────────
 // 화면에 보이는 앱 버전(휴대폰이 새 버전을 받았는지 확인용). 배포할 때마다 바꾼다.
-const APP_VERSION = '2026.11.23-2';
+const APP_VERSION = '2026.11.23-3';
 
 const S = {
   ready: false,
@@ -29,6 +30,7 @@ const S = {
   tagsDraft: [], newTagDraft: '',
   aiError: null, reclassBusy: false,
   weeklyBusy: null, openReport: null, blogOpen: null,
+  mapView: 'meaning', mapRange: 'month', mapSel: null, mapIsland: null, islandNames: {},
 };
 const root = document.getElementById('app');
 let timer = null, bookTimer = null, bookToken = null, checkToken = null, lastKey = null, lastLen = 0, toastTimer = null, syncTimer = null;
@@ -294,7 +296,15 @@ async function makeWeekly(mon, { manual = false } = {}) {
   try {
     // 지난 기록 제목도 조금 넘겨서 이번 주 생각이 예전 생각과 이어지는지 볼 수 있게 한다
     const past = live().filter(n => n.date < mon).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 50);
-    const r = await ai.weekly(notes.slice(-40), past, weekLabel(mon));
+    // 의미 분석으로 찾은 '뜻이 가까운 기록 쌍'(이번 주 글 ↔ 이번 주·지난 글)과 직접 이은 쌍을 힌트로 함께 보낸다
+    const wk = notes.slice(-40);
+    const pool = [...wk, ...past];
+    const pairs = [];
+    wk.forEach(a => { const va = vecOf(a); if (!va) return; pool.forEach(b => { if (b.id === a.id || (wk.includes(b) && b.id < a.id)) return; const vb = vecOf(b); if (!vb) return; const s = cosine(va, vb); if (s >= 0.68) pairs.push({ a, b, s, cross: a.cat !== b.cat }); }); });
+    pairs.sort((p, q) => (q.cross - p.cross) || q.s - p.s);
+    const pairText = pairs.slice(0, 12).map(p => `- [${p.a.id}] ↔ [${p.b.id}] 비슷도 ${Math.round(p.s * 100)}${p.cross ? ` (서로 다른 분야: ${catOf(p.a.cat).name}·${catOf(p.b.cat).name})` : ''}`).join('\n');
+    const linkText = [...new Set(wk.flatMap(a => [...linkedIds(a)].map(b => [a.id, b].sort().join(' ↔ '))))].slice(0, 10).map(s => `- [${s.replace(' ↔ ', '] ↔ [')}]`).join('\n');
+    const r = await ai.weekly(wk, past, weekLabel(mon), { pairs: pairText, links: linkText });
     if (!r) { if (manual) toast(ai.lastError || '돌아보기를 만들지 못했어요. 잠시 후 다시 해 주세요.'); return; }
     const final = todayS() > addDays(mon, 6); // 그 주가 끝난 뒤 만든 것인지
     const id = 'wk-' + mon;
@@ -760,6 +770,13 @@ const A = {
   syncNow: () => runSync(),
   exportXlsx: () => exportXlsx(), exportDocx: () => exportDocx(),
   reclassifyAll: () => reclassifyAll(),
+  // 두 생각 잇기/풀기(시트에서는 방금 쓴 글, 상세 화면에서는 보고 있는 글 기준)
+  toggleLink: (a, el) => toggleLink(el.dataset.id || S.noteId, a),
+  // 생각 지도
+  mapView: a => set({ mapView: a, mapSel: null, mapIsland: null }),
+  mapRange: a => set({ mapRange: a, mapSel: null, mapIsland: null }),
+  mapSel: a => set({ mapSel: S.mapSel === a ? null : a, mapIsland: null }),
+  mapIsland: a => set({ mapIsland: a === '' || S.mapIsland === Number(a) ? null : Number(a), mapSel: null }),
   embedNow: async () => { if (!ai.available()) { toast(ai.lastError || '로그인하고 온라인일 때 쓸 수 있어요.'); return; } toast('글의 의미를 분석하고 있어요…'); await embedMissing(); toast(S.embLeft ? (ai.lastError || '일부만 분석했어요. 잠시 뒤 다시 해 주세요.') : '모든 글의 의미 분석을 마쳤어요.'); },
   // 주간 돌아보기
   weeklyNow: () => makeWeekly(mondayOf(todayS()), { manual: true }),
@@ -1029,9 +1046,30 @@ function vEditor(n, cs, filled) {
 // 관련된 생각: 두 글 모두 의미 분석이 돼 있으면 '뜻이 얼마나 비슷한가'로, 아니면 예전처럼 같은 태그·갈래로 찾는다.
 // (태그가 달라도 내용이 비슷하면 이어지고, 태그만 같고 내용이 다르면 뒤로 밀린다)
 const REL_MIN = 0.62; // 이보다 덜 비슷하면 '관련'으로 보지 않는다(실제 써 보며 조정할 값)
+
+// 직접 이은 생각: 어느 쪽 글에서 이었든 두 글 모두에 보인다
+const linkedIds = n => { const s = new Set(n.links || []); live().forEach(m => { if ((m.links || []).includes(n.id)) s.add(m.id); }); s.delete(n.id); return s; };
+const isLinked = (a, b) => (a.links || []).includes(b.id) || (b.links || []).includes(a.id);
+async function toggleLink(aId, bId) {
+  const a = S.notes.find(x => x.id === aId), b = S.notes.find(x => x.id === bId);
+  if (!a || !b || a.id === b.id) return;
+  if (isLinked(a, b)) {
+    const upd = [];
+    if ((a.links || []).includes(b.id)) upd.push({ ...a, links: a.links.filter(x => x !== b.id) });
+    if ((b.links || []).includes(a.id)) upd.push({ ...b, links: b.links.filter(x => x !== a.id) });
+    await writeMany(upd);
+    toast('연결을 풀었어요.');
+  } else {
+    await writeMany([{ ...a, links: [...(a.links || []), b.id] }]);
+    toast('두 생각을 이었어요. 생각 지도에 굵은 선으로 보여요.');
+  }
+}
+
 function related(dn) {
   const v = vecOf(dn);
+  const linked = linkedIds(dn);
   return live().filter(n => n.id !== dn.id && !n.unconfirmed && !n.kind).map(n => {
+    if (linked.has(n.id)) return { n, score: 10, reason: '직접 이은 생각', ok: true, linked: true };
     const shared = n.tags.filter(t => dn.tags.includes(t)); const sameSub = n.cat === dn.cat && n.sub === dn.sub;
     const w = v ? vecOf(n) : null;
     if (v && w) {
@@ -1066,7 +1104,7 @@ function vSheet(cs) {
         ${x(n.checks && n.checks.length, `<div style="font-size:13px;color:var(--caution)">확인할 내용 ${(n.checks || []).length}개를 글에 함께 남겼어요.</div>`)}
         ${x(S.resNote, `<div style="font-size:13px;color:var(--ink-3)">${esc(S.resNote)}</div>`)}
       </div>
-      ${x(rel3.length, `<div class="row g8" style="font-size:13px;color:var(--accent);border-top:1px solid var(--line);padding-top:14px;line-height:1.5" ${act('openNote', rel3[0] ? rel3[0].n.id : '')}><span class="dot"></span>관련된 생각 ${rel3.length}개 — 「${esc(rel3[0] ? titleOf(rel3[0].n.body) : '')}」${rel3.length > 1 ? ' 외' : ''}</div>`)}
+      ${x(rel3.length, `<div class="stack g4 sheet-rel"><div class="label">이어지는 생각 · 이으면 생각 지도에 굵은 선으로 남아요</div>${each(rel3, r => { const on = isLinked(n, r.n); return `<div class="rel-mini"><button class="rel-mini-open" ${act('openNote', r.n.id)}><span class="reason">${esc(r.reason)}</span><span class="t">${esc(titleOf(r.n.body))}</span></button><button class="link-btn${on ? ' on' : ''}" ${act('toggleLink', r.n.id, idA)}>${on ? '✓ 이음' : '+ 잇기'}</button></div>`; })}</div>`)}
       <div class="row g8"><button class="btn-o" style="flex:0 0 auto;min-height:50px;padding:12px 18px" ${act('reviseNote')}>다시 고치기</button><button class="btn" style="flex:1;padding:15px;min-height:50px" ${act('confirmNote')}>작성 완료</button></div>`;
     })();
   return `<div class="sheet-wrap"><div class="sheet-bg"></div><div class="sheet" role="dialog" aria-label="저장 결과"><div class="handle"></div>${inner}</div></div>`;
@@ -1301,9 +1339,9 @@ function vDetail(cs) {
   ${x(n.checks && n.checks.length, `<div class="card checks stack"><div class="label" style="color:var(--ink-2);padding-bottom:8px">아직 확인하지 않은 내용</div>${vChecks(n.checks, 'note')}</div>`)}
   <div class="stack g4" style="margin-top:12px">
     <h2 class="serif" style="margin:0 0 8px;font-size:20px;font-weight:700">이 글과 관련된 생각</h2>
-    ${rels.length ? each(rels, r => { const rc = catOf(r.n.cat); return `<div class="rel-row" ${act('openNote', r.n.id)}>
-      <div class="row g8 wrap" style="font-size:12.5px;color:var(--ink-3)"><span class="reason">${esc(r.reason)}</span><span>${rc.emoji} ${rc.name} › ${esc(r.n.sub)} · ${fmt(r.n.date)}</span></div>
-      <div class="serif" style="font-size:16.5px;line-height:1.5">${esc(titleOf(r.n.body))}</div></div>`; }) : `<div style="font-size:14px;color:var(--ink-3);padding:8px 0">아직 이어진 생각이 없어요. 글이 쌓이면 같은 태그·갈래끼리 이어져요.</div>`}
+    ${rels.length ? each(rels, r => { const rc = catOf(r.n.cat); const on = isLinked(n, r.n); return `<div class="rel-row" ${act('openNote', r.n.id)}>
+      <div class="row between g8"><div class="row g8 wrap" style="font-size:12.5px;color:var(--ink-3)"><span class="reason${r.linked ? ' linked' : ''}">${esc(r.reason)}</span><span>${rc.emoji} ${rc.name} › ${esc(r.n.sub)} · ${fmt(r.n.date)}</span></div><button class="link-btn${on ? ' on' : ''}" ${act('toggleLink', r.n.id)}>${on ? '✓ 이음' : '+ 잇기'}</button></div>
+      <div class="serif" style="font-size:16.5px;line-height:1.5">${esc(titleOf(r.n.body))}</div></div>`; }) : `<div style="font-size:14px;color:var(--ink-3);padding:8px 0">아직 이어진 생각이 없어요. 내용이 비슷한 글이 쌓이면 여기에 나타나요.</div>`}
   </div>
 </article>`;
 }
@@ -1398,7 +1436,6 @@ function vTimeline() {
     month = `<div class="month">
       <div class="stack g8"><div class="label">${pd(todayS()).getMonth() + 1}월 돌아보기</div>
         <div class="serif pretty" style="font-size:22px;line-height:1.5">이번 달에는 <b>${byCat[0].c.name}</b>에 대해 가장 많이 생각했어요.${topTag ? ` 특히 <b>#${esc(topTag[0])}</b>${/[가-힣]/.test(topTag[0].slice(-1)) && (topTag[0].slice(-1).charCodeAt(0) - 0xAC00) % 28 ? '이' : '가'} ${topTag[1]}번 등장했어요.` : ''}</div></div>
-      ${vNet(mNotes)}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;border-top:1px solid var(--line);padding-top:18px">
         <div class="stack g4"><span style="font-size:12px;color:var(--ink-3)">이번 달 기록</span><span style="font-size:16px">${mNotes.length}편</span></div>
         <div class="stack g4"><span style="font-size:12px;color:var(--ink-3)">새로 자란 갈래</span><span style="font-size:16px">${esc(newSubs.join(', ') || '없음')}</span></div>
@@ -1410,6 +1447,7 @@ function vTimeline() {
   return `<section class="stack g32">
   <h1 class="title">흐름</h1>
   ${vWeekly()}
+  ${x(all.length, vMap())}
   ${x(!all.length, `<div class="serif" style="font-size:18px;line-height:1.7;color:var(--ink-2)">아직 흐름이 없어요. 생각을 몇 개 남기면 날짜순 흐름과 한 달 돌아보기가 여기에 생겨요.</div>`)}
   ${month}
   <div class="stack">${each(groups.slice(0, 120), g => `<div class="tl-group">
@@ -1417,6 +1455,92 @@ function vTimeline() {
     <div class="tl-list">${each(g.notes, n => { const c = catOf(n.cat); return `<div class="tl-item" ${act('openNote', n.id)}><div style="font-size:12.5px;color:var(--ink-3)">${c.emoji} ${c.name} › ${esc(n.sub)}</div><div class="serif" style="font-size:17px;line-height:1.5">${esc(titleOf(n.body))}</div></div>`; })}</div>
   </div>`)}</div>
 </section>`;
+}
+
+// ───────── 생각 지도(의미) ─────────
+const MAP_RANGES = [['month', '이번 달'], ['3m', '3개월'], ['all', '전체']];
+function mapNotes() {
+  const r = S.mapRange || 'month';
+  const from = r === 'month' ? monthKey() + '-01' : r === '3m' ? addDays(todayS(), -90) : '';
+  return live().filter(n => !n.unconfirmed && n.date >= from).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 150);
+}
+// AI 이름이 아직 없을 때의 임시 이름: 무리에서 가장 많이 쓴 태그, 없으면 갈래
+function islandFallback(isl) {
+  const ns = isl.members.map(id => findNote(id)).filter(Boolean);
+  const cnt = {}; ns.forEach(n => n.tags.forEach(t => { cnt[t] = (cnt[t] || 0) + 1; }));
+  const top = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0];
+  if (top && top[1] >= 2) return '#' + top[0];
+  const sub = {}; ns.forEach(n => { sub[n.sub] = (sub[n.sub] || 0) + 1; });
+  return Object.entries(sub).sort((a, b) => b[1] - a[1])[0]?.[0] || '주제';
+}
+const islandName = isl => (S.islandNames || {})[isl.sig] || islandFallback(isl);
+// 이름 없는 섬은 AI에게 한 번에 물어 이름을 받아 둔다(기기에 기억)
+let naming = false; const namingTried = new Set();
+async function ensureIslandNames(islands) {
+  const todo = islands.filter(i => !(S.islandNames || {})[i.sig] && !namingTried.has(i.sig));
+  if (naming || !todo.length || !ai.available()) return;
+  naming = true; todo.forEach(i => namingTried.add(i.sig));
+  try {
+    const names = await ai.nameIslands(todo.map(i => ({ titles: i.members.slice(0, 8).map(id => { const n = findNote(id); return n ? titleOf(n.body) : ''; }).filter(Boolean) })));
+    if (names && names.length) {
+      const map = { ...(S.islandNames || {}) };
+      todo.forEach((i, k) => { if (names[k]) map[i.sig] = names[k]; });
+      set({ islandNames: map }); db.set('islandNames', map);
+    }
+  } finally { naming = false; }
+}
+
+function vMap() {
+  const view = S.mapView || 'meaning';
+  const ns = mapNotes();
+  const head = `<div class="row between g8 wrap" style="align-items:center">
+      <div class="label">생각 지도</div>
+      <div class="seg">${each([['meaning', '의미 지도'], ['tags', '분야·태그']], ([k, l]) => `<button class="${view === k ? 'on' : ''}" ${act('mapView', k)}>${l}</button>`)}</div>
+    </div>
+    <div class="row g6 wrap">${each(MAP_RANGES, ([k, l]) => `<button class="chip f ink${(S.mapRange || 'month') === k ? ' on' : ''}" ${act('mapRange', k)}>${l}</button>`)}<span style="font-size:12px;color:var(--ink-3);align-self:center;margin-left:4px">${ns.length}편${ns.length >= 150 ? '(최근 150편)' : ''}</span></div>`;
+  if (view === 'tags') return `<div class="month">${head}${ns.length ? vNet(ns) : '<div class="muted">이 기간에는 기록이 없어요.</div>'}</div>`;
+
+  const m = buildMap(ns);
+  if (m.nodes.length < 3) {
+    const left = ns.filter(n => !vecOf(n)).length;
+    return `<div class="month">${head}<div style="font-size:14px;color:var(--ink-2);line-height:1.7">의미 분석된 글이 3편 이상이면 생각 지도가 그려져요.${left ? ` 아직 분석 안 된 글이 ${left}편 있어요(서재 → 내 기록 관리 → 지금 분석).` : ''}</div></div>`;
+  }
+  setTimeout(() => ensureIslandNames(m.islands), 0);
+  const pct = v => (v * 100).toFixed(2) + '%';
+  const selI = m.nodes.findIndex(x => x.id === S.mapSel);
+  const isl = Number.isInteger(S.mapIsland) ? m.islands[S.mapIsland] : null;
+  const near = new Set();
+  if (selI >= 0) { near.add(selI); m.edges.forEach(e => { if (e.a === selI) near.add(e.b); if (e.b === selI) near.add(e.a); }); }
+  const inIsl = isl ? new Set(isl.members) : null;
+  const lit = i => (selI < 0 && !isl) || near.has(i) || (inIsl && inIsl.has(m.nodes[i].id));
+  const lines = each(m.edges, e => {
+    const on = selI >= 0 ? (e.a === selI || e.b === selI) : (!isl || (inIsl.has(m.nodes[e.a].id) && inIsl.has(m.nodes[e.b].id)));
+    const w = e.type === 'link' ? 2.6 : 0.8 + Math.max(0, e.sim - 0.62) * 7;
+    const color = e.type === 'link' ? '#2F5A4B' : on && (selI >= 0 || isl) ? '#8FA89C' : '#D3CCBF';
+    return `<line x1="${pct(m.nodes[e.a].x)}" y1="${pct(m.nodes[e.a].y)}" x2="${pct(m.nodes[e.b].x)}" y2="${pct(m.nodes[e.b].y)}" style="stroke:${color};stroke-width:${w.toFixed(2)};opacity:${on ? 1 : 0.25};stroke-linecap:round"></line>`;
+  });
+  const dots = each(m.nodes, (nd, i) => {
+    const c = catOf(nd.n.cat); const isSel = i === selI;
+    return `<button class="tdot${isSel ? ' sel' : ''}" title="${esc(titleOf(nd.n.body))}" aria-label="${esc(titleOf(nd.n.body))}" style="left:${pct(nd.x)};top:${pct(nd.y)};background:${catColor(c.hue)};opacity:${lit(i) ? 1 : 0.25}" ${act('mapSel', nd.id)}></button>`;
+  });
+  const labels = each(m.islands, (s, k) => `<button class="tisl${S.mapIsland === k ? ' on' : ''}" style="left:${pct(s.x)};top:${pct(s.y)};opacity:${selI >= 0 && !s.members.includes(S.mapSel) ? 0.35 : 1}" ${act('mapIsland', String(k))}>${esc(islandName(s))}</button>`);
+
+  let panel = `<div style="font-size:12.5px;color:var(--ink-3);line-height:1.6">점은 글이에요(색은 분야). 가는 선은 내용이 비슷한 글, 굵은 초록 선은 직접 이은 글이에요. 가까이 모인 무리는 ‘주제 섬’으로 이름이 붙어요. 점이나 섬 이름을 눌러 보세요.</div>`;
+  if (selI >= 0) {
+    const sel = m.nodes[selI].n; const sc = catOf(sel.cat);
+    const conns = m.edges.filter(e => e.a === selI || e.b === selI).map(e => ({ n: m.nodes[e.a === selI ? e.b : e.a].n, e })).sort((a, b) => (b.e.type === 'link') - (a.e.type === 'link') || b.e.sim - a.e.sim);
+    panel = `<div class="stack g8 tpanel">
+      <div class="row between g8"><span style="font-size:12.5px;color:var(--ink-3)">${sc.emoji} ${sc.name} › ${esc(sel.sub)} · ${shortDate(sel.date)}</span><button class="btn-t" style="font-size:13px;color:var(--ink-3)" ${act('mapSel', sel.id)}>닫기</button></div>
+      <button class="serif tpanel-title" ${act('openNote', sel.id)}>${esc(titleOf(sel.body))} →</button>
+      ${conns.length ? each(conns, x2 => { const on = x2.e.type === 'link'; return `<div class="rel-mini"><button class="rel-mini-open" ${act('openNote', x2.n.id)}><span class="reason${on ? ' linked' : ''}">${on ? '직접 이음' : '비슷한 내용'}</span><span class="t">${esc(titleOf(x2.n.body))}</span></button><button class="link-btn${on ? ' on' : ''}" ${act('toggleLink', x2.n.id)} data-id="${esc(sel.id)}">${on ? '✓ 이음' : '+ 잇기'}</button></div>`; }) : '<div style="font-size:13px;color:var(--ink-3)">이 기간에 내용이 비슷한 글이 아직 없어요.</div>'}
+    </div>`;
+  } else if (isl) {
+    panel = `<div class="stack g8 tpanel">
+      <div class="row between g8"><span style="font-size:14px;font-weight:600">🏝 ${esc(islandName(isl))} <span style="font-weight:400;color:var(--ink-3)">· ${isl.members.length}편</span></span><button class="btn-t" style="font-size:13px;color:var(--ink-3)" ${act('mapIsland', '')}>닫기</button></div>
+      ${each(isl.members.map(id => findNote(id)).filter(Boolean).sort((a, b) => b.date.localeCompare(a.date)), n => `<div class="row g12" style="padding:8px 0;border-top:1px solid var(--hover);align-items:baseline" ${act('openNote', n.id)}><span style="font-size:12.5px;color:var(--ink-3);flex-shrink:0">${shortDate(n.date)}</span><span class="serif" style="font-size:15.5px;line-height:1.5">${esc(titleOf(n.body))}</span></div>`)}
+    </div>`;
+  }
+  return `<div class="month">${head}<div class="tmap"><svg aria-hidden="true">${lines}</svg>${dots}${labels}</div>${panel}</div>`;
 }
 
 function vNet(mNotes) {
@@ -1509,6 +1633,7 @@ async function boot() {
   try {
     const [notes, subBorn, lastExport, aiUsage, libView, landingDone, catsRec, aiLat] = await Promise.all([db.allNotes(), db.get('subBorn'), db.get('lastExport'), db.get('aiUsage'), db.get('libView'), db.get('landingDone'), db.get('cats'), db.get('aiLat')]);
     S.aiLat = Array.isArray(aiLat) ? aiLat : [];
+    try { S.islandNames = (await db.get('islandNames')) || {}; } catch (e) { /* 무시 */ }
     Object.assign(S, { notes: notes || [], subBorn: subBorn || {}, lastExport: lastExport || null, aiUsage: aiUsage || {}, libView: libView || 'shelf', landingDone: !!landingDone });
     if (catsRec && Array.isArray(catsRec.list)) { setCats(catsRec.list); Object.assign(S, { catsAt: catsRec.updatedAt || null, catsDirty: !!catsRec.dirty }); }
   } catch (e) {
